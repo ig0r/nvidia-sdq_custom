@@ -1,0 +1,117 @@
+# GENERAL SETTINGS
+[general]
+output_dir = "./data/nemo_briefs_20260422"
+data_dir = "./rawdata/parsed-techbriefs"
+metadata_folder = "./rawdata-pub242/metadata"
+[general.theme]
+cmap = "gist_rainbow"
+max_opacity = 0.9
+spectrum = 1.0
+[general.tasks]
+jsa_analysis = false
+jsa_nlp_analysis = false
+doc_analysis = false
+train_mlp = false
+
+# PUB242 SETTINGS
+[pub242]
+qa_file = "generated-questions_5_async_citation_prompt_complete.json"
+proc_file = "process-citations_v5.json"
+embed_inputs = ["question"]
+test_inputs = ["question"]
+version = "v0_0"
+build_name = ""
+chapters = []
+load_distilled = false
+[pub242.tasks]
+embed_docs = false
+train_nn = false
+test_nn = false
+saliency = false
+distill = false
+[pub242.saliency]
+min_docs = 5
+regex_filter = "^[a-zA-Z0-9.\\-/\\_]+$"
+min_saliency = 0.10
+mode = "main"                           # "main" or "avg"
+min_as_score = 0.8                      # default 1.0 - Lower threshold = more edges = tighter layout
+normalization = "lift"                  # "lift" or "equivalence"
+edge_pruning = "top_k"                  # None, "top_k", "percentile"
+edge_pruning_value = 15                 # k for top_k (top X), or percentile threshold (> X)
+
+# MODEL SETTINGS
+[llm]
+json_mode = true
+model = "gpt-4o-mini"    # ["gemini-2.0-flash", "gpt-4o-mini", "gemma3:4b", "qwen3:4b"]
+request_timeout = 2
+temperature = 0.0
+max_tokens = 4000
+max_input_tokens = 3000
+max_chain_tokens = 30000
+chunk_size = 20
+prompt_lib = "./prompts"
+
+[embedding]
+model = "nomic-embed-text:latest" # ['nomic-embed-text:latest', 'qwen3-embedding:0.6b', 'text-embedding-3-small', 'gemini-embedding-001', 'embeddinggemma:latest']
+embed_dim = 768
+chunk_size = 256
+recursive_overlap = 50
+prefix = ""
+
+# ANALYSIS SETTINGS
+[jsa]
+accidents_file = "./rawdata/sir.csv" # imis or sir
+jsa_file = "./rawdata/pub517.csv"
+final_col = "Job Title"              # final column in pub517 JSA
+narr_txt = "Final_Narrative"         # narrative text column (abstract_text - IMIS, Final_Narrative - pub517)
+data_offset = 1199
+num_jobs = 3
+[jsa.tasks]
+get_jobs = false
+envr_oper = false       # DEPRECATED
+hazard = false
+pavement_type = false
+embed_accidents = false
+
+[nlp]
+class_type = "job"
+class_key = "narr"
+lemma = true
+overwrite = true
+threshold = 0.01
+[nlp.tasks]
+zipf = false
+ctfidf = false
+wordcloud = false
+
+[doc]
+iter_classes = 7
+[doc.rag]
+method = "cosine"
+prompt = "rag-basic"
+paraphrase = true
+top_k = 10
+top_n = -1
+[doc.mlp]
+mode = "mlp"                       # ["lr", "mlp"]
+class_mode = "multi"
+class_file = "./rawdata/_jobs.csv"
+version = "v0_0"
+data_split = 0.7
+hidden_size = 256                  # number of neurons in hidden layer - 256
+batch_size = 32                    # number of samples per gradient update - 32
+lr = 0.001                         # learning rate  - 0.001
+epochs = 100                       # number of training epochs - 100
+dropout = 0.1                      # percentage of neurons to drop - 0.1
+weight_decay = 0.01                # L2 regularization factor (1e-5 is light, 1e-4 is moderate, 1e-3 is heavy)
+alpha = 0.2                        # weight for classification loss in combined loss function (0.0-1.0) (for AE)
+bneck = 32                         # size of the bottleneck layer (for AE)
+patience = 15                      # epochs to wait for improvement before early stopping - 15
+neg_sampling = true
+perc_negative = 0.06
+ood_threshold = 0.3
+[doc.tasks]
+parse_docs = false
+embed_docs = false
+paraphrase_docs = false
+classify_docs = false
