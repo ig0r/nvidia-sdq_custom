@@ -6,10 +6,10 @@ import random
 import numpy as np
 import tiktoken as tikt
 from pathlib import Path
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from aisa.utils import files, logger, dictlist
 from aisa.gen import BaseLLM, LLMConfig, Embedder, EmbedConfig
 from aisa.parse.chunk import RecursiveChunker
+from aisa.parse.chunkers import Chunker, get_chunker
 
 SYS_PROMPTS: dict[str, str] = {
     "artifacts": "You are an expert at analyzing documents and extracting semantic artifacts.",
@@ -108,6 +108,7 @@ class QAGenerator:
         input_dir: str = "./test_md",
         llm: BaseLLM = BaseLLM(LLMConfig()),
         embedder: Embedder = Embedder(EmbedConfig()),
+        chunk_cfg: dict = None,
     ):
         self.llm: BaseLLM = llm
         self.embedder: Embedder = embedder
@@ -130,18 +131,44 @@ class QAGenerator:
         self.min_complexity: int = 3
         self.num_pairs: int = 15
 
+        # chunker (backward-compatible: missing [chunking] falls back to recursive w/ embedding params)
+        if not chunk_cfg:
+            chunk_cfg = {
+                "method": "recursive",
+                "chunk_size": embedder.cfg.chunk_size if embedder.cfg else 256,
+                "recursive_overlap": embedder.cfg.recursive_overlap if embedder.cfg else 50,
+            }
+        self.chunk_cfg: dict = chunk_cfg
+        self.chunker: Chunker = get_chunker(chunk_cfg, llm)
+
         # build directories
-        c_size: int = self.embedder.cfg.chunk_size if self.embedder.cfg else 256
+        method: str = chunk_cfg.get("method", "recursive")
+        c_size: int = chunk_cfg.get("chunk_size", 256)
         self.root_dir: str = root_dir
         self.input_dir: str = input_dir
-        self.chunk_dir: str = files.append_directory(root_dir, f"doc-chunks_{c_size}")
+        self.chunk_dir: str = files.append_directory(
+            root_dir, f"doc-chunks_{c_size}_{method}"
+        )
         self.doc_paths: dict[Path, str] = {}
 
         # main task mapping
         self.tasks: dict[str, callable] = {
+            "chunk": self.run_chunk_only_pipeline,
             "sdg": self.run_sgd_pipeline,
             "prep": self.run_data_prep_pipeline,
         }
+
+    async def run_chunk_only_pipeline(self):
+        md_files: list[Path] = sorted(Path(self.input_dir).glob("*.md"))
+        if not md_files:
+            logger.log("NLP", f"No .md files found in {self.input_dir}")
+            return
+        for file_path in md_files:
+            chunks: dictlist = self.path2chunks(file_path)
+            logger.log(
+                "CHUNK",
+                f"{file_path.name}: {len(chunks)} chunks -> {self.doc_paths[file_path]}",
+            )
 
     def path2chunks(self, file_path: Path) -> dictlist:
         abs_path, filename = files.split_path(str(file_path))
@@ -152,17 +179,12 @@ class QAGenerator:
         if Path(base_out).exists() and not self.overwrite:
             return files.read_json(base_out).get("texts", [])
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.embedder.cfg.chunk_size,
-            chunk_overlap=self.embedder.cfg.recursive_overlap,
-            length_function=get_token_count,
-        )
         raw_text = file_path.read_text(encoding="utf-8")
         tables = MD_PATTERNS["table"].findall(raw_text)
         images = MD_PATTERNS["image"].findall(raw_text)
         raw_text = MD_PATTERNS["table"].sub("", raw_text)
         raw_text = MD_PATTERNS["image"].sub("", raw_text)
-        raw_chunks: list[str] = splitter.split_text(raw_text)
+        raw_chunks: list[str] = self.chunker.split(raw_text)
         chunks: dictlist = [
             {"text": ch, "chunk_id": idx, "tokens": get_token_count(ch)}
             for idx, ch in enumerate(raw_chunks)
@@ -503,6 +525,7 @@ async def main(cfg: dict):
         input_dir=cfg["general"]["data_dir"],
         llm=BaseLLM(LLMConfig(**cfg["llm"])),
         embedder=Embedder(EmbedConfig(**cfg["embedding"])),
+        chunk_cfg=cfg.get("chunking"),
     )
 
     for task_name, should_run in cfg["nemo_task"].items():
@@ -515,25 +538,25 @@ async def main(cfg: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--chunk-only", action="store_true", help="Run chunking only (stops after path2chunks)")
     parser.add_argument("--sdg", action="store_true", help="Run SDG")
     parser.add_argument("--prep", action="store_true", help="Run data prep")
-    parser.add_argument("--cfg", type=str, default="./example-config.toml", help="Cfg")
+    parser.add_argument("--cfg", type=str, default="./cfg/nemo.toml", help="Cfg")
     parser.add_argument("--input_dir", type=str, help="Input directory")
     parser.add_argument("--output_dir", type=str, help="Output directory")
-    global_cfg: dict = files.read_toml(parser.parse_args().cfg)
-    global_cfg["general"]["output_dir"] = (
-        parser.parse_args().output_dir
-        if parser.parse_args().output_dir
-        else global_cfg["general"]["output_dir"]
-    )
-    global_cfg["general"]["data_dir"] = (
-        parser.parse_args().input_dir
-        if parser.parse_args().input_dir
-        else global_cfg["general"]["data_dir"]
-    )
+    args = parser.parse_args()
+
+    global_cfg: dict = files.read_toml(args.cfg)
+    if args.output_dir:
+        global_cfg["general"]["output_dir"] = args.output_dir
+    if args.input_dir:
+        global_cfg["general"]["data_dir"] = args.input_dir
     global_cfg["nemo_task"] = {
-        "sdg": parser.parse_args().sdg,
-        "prep": parser.parse_args().prep,
+        "chunk": args.chunk_only,
+        "sdg": args.sdg,
+        "prep": args.prep,
     }
+    if not any(global_cfg["nemo_task"].values()):
+        parser.error("no task selected: pass at least one of --chunk-only, --sdg, --prep")
     files.create_folder(global_cfg["general"]["output_dir"])
     asyncio.run(main(global_cfg))
