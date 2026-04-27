@@ -175,9 +175,14 @@ class QAGenerator:
         doc_id: str = "_".join(filename.split("_")[:2])
         base_out: str = f"{self.chunk_dir}/{doc_id}-chunks.json"
         self.doc_paths[file_path] = base_out
+        method: str = self.chunk_cfg.get("method", "recursive")
+        is_hybrid: bool = method == "random_logical"
+        cache_path: str = (
+            f"{self.chunk_dir}/{doc_id}-logic-chunks.json" if is_hybrid else base_out
+        )
 
-        if Path(base_out).exists() and not self.overwrite:
-            return files.read_json(base_out).get("texts", [])
+        if Path(cache_path).exists() and not self.overwrite:
+            return files.read_json(cache_path).get("texts", [])
 
         raw_text = file_path.read_text(encoding="utf-8")
         tables = MD_PATTERNS["table"].findall(raw_text)
@@ -185,6 +190,46 @@ class QAGenerator:
         raw_text = MD_PATTERNS["table"].sub("", raw_text)
         raw_text = MD_PATTERNS["image"].sub("", raw_text)
         raw_chunks: list[str] = self.chunker.split(raw_text)
+        parsed_file: str = str(abs_path) + "/" + filename
+
+        if is_hybrid:
+            rec_pieces: list[str] = self.chunker.last_recursive_pieces
+            sources: list[list[int]] = self.chunker.last_source_indices
+            rec_chunks: dictlist = [
+                {"text": p, "chunk_id": idx, "tokens": get_token_count(p)}
+                for idx, p in enumerate(rec_pieces)
+            ]
+            files.write_json(
+                {
+                    "doc_id": doc_id,
+                    "parsed_file": parsed_file,
+                    "texts": rec_chunks,
+                    "images": images,
+                    "tables": tables,
+                },
+                base_out,
+            )
+            logic_chunks: dictlist = [
+                {
+                    "text": ch,
+                    "chunk_id": idx,
+                    "tokens": get_token_count(ch),
+                    "source_chunk_ids": sources[idx] if idx < len(sources) else [],
+                }
+                for idx, ch in enumerate(raw_chunks)
+            ]
+            files.write_json(
+                {
+                    "doc_id": doc_id,
+                    "parsed_file": parsed_file,
+                    "texts": logic_chunks,
+                    "images": images,
+                    "tables": tables,
+                },
+                cache_path,
+            )
+            return logic_chunks
+
         chunks: dictlist = [
             {"text": ch, "chunk_id": idx, "tokens": get_token_count(ch)}
             for idx, ch in enumerate(raw_chunks)
@@ -192,7 +237,7 @@ class QAGenerator:
         files.write_json(
             {
                 "doc_id": doc_id,
-                "parsed_file": str(abs_path) + "/" + filename,
+                "parsed_file": parsed_file,
                 "texts": chunks,
                 "images": images,
                 "tables": tables,

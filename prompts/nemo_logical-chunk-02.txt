@@ -1,0 +1,50 @@
+You will be analyzing a sequence of text chunks from pavement engineering documentation to identify where logical section breaks should occur. Your goal is to split the text into semantically coherent sections that respect the natural flow and organization of technical documentation.
+
+Here is the tagged text you will analyze:
+
+<tagged_text>
+{TAGGED_TEXT}
+</tagged_text>
+
+The text above consists of short chunks wrapped in <start_chunk_N>...<end_chunk_N> tags, where N is the zero-based index of each chunk.
+
+Your task is to identify the chunk indices after which a section break should occur. Follow these rules carefully:
+
+WHEN TO SPLIT:
+- Split when there is a meaningful shift in topic (e.g., moving from material properties to testing procedures, from design criteria to construction methods)
+- Split when transitioning between major sections of technical documentation (e.g., from introduction to methodology, from results to discussion)
+- Split when the subject matter changes substantially (e.g., from asphalt mixtures to concrete pavements)
+- Split at natural boundaries in pavement engineering documentation (e.g., between different pavement layers, between analysis phases, between different standards or specifications)
+
+WHEN NOT TO SPLIT:
+- Do NOT split within a coherent paragraph that discusses a single concept
+- Do NOT split within a numbered or bulleted list
+- Do NOT split between tightly coupled ideas (e.g., a problem statement immediately followed by its solution)
+- Do NOT split between a heading/title and its immediately following content
+- Do NOT split within a table, figure description, or equation and its explanation
+- Do NOT split within a continuous technical procedure or step-by-step process
+
+REQUIREMENTS:
+- You must provide at least one split unless the entire text is genuinely a single coherent unit
+- Split indices must be strictly increasing
+- Split indices must be valid (within the range of chunk indices provided)
+- A split at index N means: chunk N is the last chunk of the current section, and chunk N+1 begins the next section
+
+Before providing your answer, use the scratchpad below to think through your analysis:
+
+<scratchpad>
+- First, identify the main topics or themes present in the text
+- Note where significant topic shifts occur
+- Consider the structure typical of pavement engineering documentation
+- List potential split points and verify they meet the criteria above
+- Ensure your chosen splits create meaningful, coherent sections
+</scratchpad>
+
+After your analysis, provide your answer as a JSON object with a single key "split_after" whose value is a list of integer chunk indices, in strictly increasing order.
+
+Example valid outputs:
+{"split_after": [3, 7, 12]}
+{"split_after": [5]}
+{"split_after": [2, 8, 15, 23]}
+
+Return only the JSON object inside <answer> tags, with no other text.

@@ -75,3 +75,60 @@ Logical chunking adds roughly `ceil(doc_tokens / (presplit_tokens * stride))` ex
 - Confirm JSON output format for the logical-chunk prompt (vs plaintext `split_after: ...`).
 - Confirm default config values (window 40 / stride 30 / presplit 50).
 - Whether to drop the sliding window and require each doc fit in a single LLM call (simpler, but fails on long docs).
+
+---
+
+# Mode 3: `random_logical` — logical chunks built from recursive intermediates
+
+Adds a third chunking mode where the LLM groups already-recursively-split chunks into semantic clusters. Both the recursive intermediate and the final logical chunks are written to disk for inspection.
+
+## Config additions
+
+```toml
+[chunking]
+method = "recursive"   # "recursive" | "logical" | "random_logical"
+# (existing logical_* keys unchanged)
+hybrid_window = 8      # 8 × 256 ≈ 2048 tok per LLM call (fits max_input_tokens=3000)
+hybrid_stride = 6      # overlap = 2 pieces between windows
+```
+
+The mode reuses `chunk_size` and `recursive_overlap` for the recursive pre-stage. `logical_presplit_tokens` is unused.
+
+## Code changes
+
+In `aisa/parse/chunkers.py`:
+
+1. **Extract shared helpers** so logic is not duplicated between `LLMSemanticChunker` and the new class:
+   - `_llm_split_decisions(llm, prompt_template, pieces, window, stride) -> list[int]` — runs windowed LLM calls, validates each response, returns sorted/deduplicated split indices.
+   - `_assemble_with_overlap_trim(pieces, split_points, has_overlap) -> tuple[list[str], list[list[int]]]` — groups pieces by split points; when `has_overlap=True`, strips shared suffix-prefix between consecutive pieces in each group (mirrors `_nemo.py::_trim_overlap_for_context` style). Returns final chunks and source-piece indices per chunk.
+   - `_shared_suffix_prefix_len(a, b)` — small helper, duplicated locally to avoid `_nemo.py` import cycle.
+
+2. **Refactor `LLMSemanticChunker`** to call those helpers with `has_overlap=False`. No behavior change.
+
+3. **New `HybridLogicalChunker`** — composes a `RecursiveTextChunker` (chunk_size, recursive_overlap) for the pre-stage and runs the LLM windowing on the resulting pieces. `has_overlap=True` for assembly. Validates `hybrid_window × chunk_size <= [llm].max_input_tokens` at construction time. Exposes `last_recursive_pieces: list[str]` and `last_source_indices: list[list[int]]` for `path2chunks` to write the intermediate file. Reuses the same `nemo_logical-chunk` prompt as mode 2.
+
+4. **`get_chunker`** — adds the `"random_logical"` branch.
+
+## File outputs
+
+Cache dir: `{output_dir}/doc-chunks_{chunk_size}_random_logical/`
+
+Per document:
+- `{doc_id}-chunks.json` — recursive intermediate, schema unchanged: `{doc_id, parsed_file, texts: [{text, chunk_id, tokens}], images, tables}`.
+- `{doc_id}-logic-chunks.json` — final logical chunks; `texts` entries gain a `source_chunk_ids: list[int]` field listing which recursive `chunk_id`s each logical chunk was assembled from.
+
+## `_nemo.py::path2chunks` changes
+
+- Cache hit check: when `method == "random_logical"`, key on `-logic-chunks.json` (the final). If present, read `texts` and return.
+- After running `self.chunker.split(raw_text)`:
+  - For mode 3: write the recursive intermediate (`self.chunker.last_recursive_pieces`) to `-chunks.json`, and the final logical chunks (with `source_chunk_ids` derived from `self.chunker.last_source_indices`) to `-logic-chunks.json`.
+  - For modes 1 and 2: unchanged.
+- `self.doc_paths[file_path]` continues to point at `-chunks.json` for all modes — downstream stages derive their filenames via `.replace("-chunks.json", "-artifacts.json")`, which works regardless of method.
+
+## Caching strategy (option A)
+
+Per-mode cache. Mode 3 always recomputes its recursive intermediate; it does NOT read mode 1's `doc-chunks_256_recursive/` cache. Each method's directory is fully self-contained — no cross-mode coupling, no order dependency.
+
+## Tradeoff
+
+LLM picks boundaries at 256-token granularity (vs 50 in mode 2). Coarser decisions but more context per piece. Re-split safety net at `2 × chunk_size = 512` tokens fires when LLM groups 3+ recursive pieces (since `3 × ~206 effective ≈ 618` tokens). Source-index mapping is imprecise for re-split chunks (the entire pre-cap source list is attached to every sub-piece).

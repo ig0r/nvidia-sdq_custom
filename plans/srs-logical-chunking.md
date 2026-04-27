@@ -123,6 +123,22 @@ The SDG pipeline (`_nemo.py`) runs four LLM-backed stages per markdown file. Sta
 ### FR-10 Documentation
 **FR-10.1** `CLAUDE.md` SHALL be updated to (a) list `nemo_logical-chunk` as a conditionally-required prompt, (b) describe the `[chunking]` section, (c) note the `RecursiveChunker` (batcher) vs `RecursiveTextChunker` (splitter) distinction.
 
+### FR-11 Mode 3: `random_logical` (logical chunks built from recursive intermediates)
+**FR-11.1** `[chunking].method` SHALL accept the additional value `"random_logical"`. Mode-3 selection SHALL produce a chunker that pre-splits using `RecursiveTextChunker(chunk_size, recursive_overlap)` and then groups the resulting recursive pieces via the same LLM-windowing protocol as `LLMSemanticChunker`.
+**FR-11.2** Two new config keys SHALL be added: `hybrid_window` (int, default 8) and `hybrid_stride` (int, default 6, must be `0 < hybrid_stride <= hybrid_window`). They control window/stride for mode 3 only. `logical_presplit_tokens` is NOT used by mode 3.
+**FR-11.3** Mode-3 chunker construction SHALL validate `hybrid_window × chunk_size <= [llm].max_input_tokens` and raise `ValueError` if exceeded.
+**FR-11.4** The shared LLM-windowing logic (windowing, response validation per FR-6, and split-point assembly) SHALL be extracted from `LLMSemanticChunker` into module-level helpers in `aisa/parse/chunkers.py` so both mode 2 and mode 3 reuse the same code paths. The refactor MUST preserve mode 2 behavior bit-for-bit.
+**FR-11.5** Mode-3 assembly SHALL strip the recursive-overlap region between consecutive recursive pieces inside each logical group via shared suffix-prefix detection (mirroring `_nemo.py::_trim_overlap_for_context`). Mode 2 assembly SHALL NOT perform this trimming (its pre-split overlap is 0).
+**FR-11.6** The mode-3 chunker SHALL expose `last_recursive_pieces: list[str]` and `last_source_indices: list[list[int]]` after each `.split(text)` call so that `path2chunks` can write the recursive intermediate alongside the final logical chunks.
+**FR-11.7** Output files (mode 3 only):
+- `{output_dir}/doc-chunks_{chunk_size}_random_logical/{doc_id}-chunks.json` — recursive intermediate, schema unchanged from FR-2.3 / §5.3.
+- `{output_dir}/doc-chunks_{chunk_size}_random_logical/{doc_id}-logic-chunks.json` — final logical chunks; each entry in `texts` SHALL include a `source_chunk_ids: list[int]` field listing the recursive `chunk_id`s contained in that logical chunk.
+**FR-11.8** Mode-3 cache hit detection SHALL key on `-logic-chunks.json` (the final). Existence of `-chunks.json` alone is insufficient and forces a re-run.
+**FR-11.9** `self.doc_paths[file_path]` SHALL continue to point at `-chunks.json` for all modes so downstream stages (`extract_artifacts`, `generate_qa_pairs`, `evaluate_qa_pairs`) continue to derive their output filenames via `.replace("-chunks.json", "...")` without modification.
+**FR-11.10** Mode-3 cache SHALL be fully self-contained (option A): the recursive intermediate is always recomputed within mode 3's own directory and SHALL NOT read from mode 1's `doc-chunks_{size}_recursive/` cache.
+**FR-11.11** Mode 3 SHALL reuse the `nemo_logical-chunk` prompt; no new prompt file is required.
+**FR-11.12** Mode 3 SHALL NOT impose any output-side size cap on logical chunks. The LLM's grouping decision is preserved verbatim; `source_chunk_ids` is therefore always exact. The de facto upper bound on any logical chunk is `hybrid_window × chunk_size` (minus accumulated overlap-trim), enforced earlier at LLM-input time by FR-11.3. The character-wise re-splitter (`fallback_splitter`) is consequently NOT instantiated by `HybridLogicalChunker`. Rationale: mode 3's contract is "report what the LLM grouped"; capping output silently overrides that contract, and downstream stages (`extract_artifacts` bundling, `mine_hard_negatives` embedding) handle chunks up to `[llm].max_input_tokens` correctly.
+
 ---
 
 ## 4. Non-Functional Requirements
@@ -152,12 +168,14 @@ Logical chunking adds approximately `ceil(doc_tokens / (logical_presplit_tokens 
 ### 5.1 Configuration interface
 ```toml
 [chunking]
-method = "recursive"          # enum: "recursive" | "logical"
+method = "recursive"          # enum: "recursive" | "logical" | "random_logical"
 chunk_size = 256              # int, target tokens per final chunk
-recursive_overlap = 50        # int, overlap tokens (recursive) / pre-split size (logical)
-logical_presplit_tokens = 50  # int, size of tagged pieces
-logical_window = 40           # int, tagged pieces per LLM call
-logical_stride = 30           # int, slide amount (<= logical_window)
+recursive_overlap = 50        # int, overlap tokens (recursive / random_logical pre-split)
+logical_presplit_tokens = 50  # int, size of tagged pieces (logical only)
+logical_window = 40           # int, tagged pieces per LLM call (logical only)
+logical_stride = 30           # int, slide amount (logical only, <= logical_window)
+hybrid_window = 8             # int, recursive pieces per LLM call (random_logical only)
+hybrid_stride = 6             # int, slide amount (random_logical only, <= hybrid_window)
 ```
 
 ### 5.2 Python interface
@@ -168,14 +186,20 @@ class Chunker(Protocol):
 
 class RecursiveTextChunker(Chunker): ...
 class LLMSemanticChunker(Chunker): ...
+class HybridLogicalChunker(Chunker):
+    last_recursive_pieces: list[str]      # populated after each .split() call
+    last_source_indices: list[list[int]]  # populated after each .split() call
 
 def get_chunker(chunk_cfg: dict, llm: BaseLLM | None = None) -> Chunker: ...
 ```
 
 ### 5.3 File interface
 - **Input**: `{input_dir}/*.md`
-- **Output**: `{root_dir}/doc-chunks_{chunk_size}_{method}/{doc_id}-chunks.json`
-- **Schema** (unchanged):
+- **Modes 1, 2 output**: `{root_dir}/doc-chunks_{chunk_size}_{method}/{doc_id}-chunks.json` (schema below).
+- **Mode 3 output**: same dir (`doc-chunks_{chunk_size}_random_logical`), two files per doc:
+  - `{doc_id}-chunks.json` — recursive intermediate (schema below).
+  - `{doc_id}-logic-chunks.json` — final logical chunks; `texts` entries gain `source_chunk_ids: list[int]`.
+- **Schema** (modes 1, 2, and the recursive intermediate of mode 3):
   ```json
   {
     "doc_id": "...",
@@ -185,6 +209,7 @@ def get_chunker(chunk_cfg: dict, llm: BaseLLM | None = None) -> Chunker: ...
     "tables": [...]
   }
   ```
+- **Schema extension** (mode 3 `-logic-chunks.json`): each `texts[i]` has `{text, chunk_id, tokens, source_chunk_ids}` where `source_chunk_ids` are the recursive `chunk_id`s contained in this logical chunk.
 
 ### 5.4 Prompt interface
 `prompts/nemo_logical-chunk.txt`:

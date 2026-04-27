@@ -26,6 +26,7 @@ RECURSIVE_SUFFIX = "-chunks.json"
 BODY_FONT_PT = 9.5
 LABEL_FONT_PT = 9.0
 COL_WIDTH = Cm(9.0)
+OVERLAP_COLOR = RGBColor(0xA0, 0xA0, 0xA0)  # grey for recursive-chunk overlap regions
 
 
 def discover_doc_ids(input_dir: Path) -> list[str]:
@@ -53,13 +54,68 @@ def write_label(cell, text: str) -> None:
 
 
 def write_chunk_text(cell, text: str) -> None:
-    """Render multiline chunk text in a cell, preserving paragraph and line breaks."""
-    body = cell.add_paragraph()
-    for i, line in enumerate(text.split("\n")):
-        if i > 0:
-            body.add_run().add_break()
-        run = body.add_run(line)
-        run.font.size = Pt(BODY_FONT_PT)
+    """Render chunk text — no special coloring."""
+    write_styled_chunk_text(cell, [(text, None)])
+
+
+def write_styled_chunk_text(cell, segments: list[tuple[str, "RGBColor | None"]]) -> None:
+    """Render a chunk made up of colored segments.
+
+    `segments` is a list of (text, color) tuples in document order; color=None means default.
+    `\\n\\n` splits paragraphs (so Word can break cleanly across pages); `\\n` becomes a
+    line break within a paragraph.
+    """
+    paragraphs: list[list[tuple[str, "RGBColor | None"]]] = [[]]
+    for seg_text, seg_color in segments:
+        parts = seg_text.split("\n\n")
+        for k, part in enumerate(parts):
+            if k > 0:
+                paragraphs.append([])
+            if part:
+                paragraphs[-1].append((part, seg_color))
+
+    for para_runs in paragraphs:
+        para = cell.add_paragraph()
+        for txt, color in para_runs:
+            lines = txt.split("\n")
+            for j, line in enumerate(lines):
+                if j > 0:
+                    para.add_run().add_break()
+                if not line:
+                    continue
+                run = para.add_run(line)
+                run.font.size = Pt(BODY_FONT_PT)
+                if color is not None:
+                    run.font.color.rgb = color
+
+
+def longest_overlap(a: str, b: str) -> int:
+    """Length of the longest suffix of `a` that equals a prefix of `b`."""
+    max_k = min(len(a), len(b))
+    for k in range(max_k, 0, -1):
+        if a.endswith(b[:k]):
+            return k
+    return 0
+
+
+def split_for_overlap(
+    text: str, head_len: int, tail_len: int
+) -> list[tuple[str, "RGBColor | None"]]:
+    """Split `text` into [head_overlap | middle | tail_overlap] colored segments."""
+    if head_len + tail_len > len(text):
+        # overlap regions collide — clamp the tail so middle doesn't go negative
+        tail_len = max(0, len(text) - head_len)
+    head = text[:head_len]
+    tail = text[len(text) - tail_len:] if tail_len else ""
+    middle = text[head_len: len(text) - tail_len] if tail_len else text[head_len:]
+    segments: list[tuple[str, "RGBColor | None"]] = []
+    if head:
+        segments.append((head, OVERLAP_COLOR))
+    if middle:
+        segments.append((middle, None))
+    if tail:
+        segments.append((tail, OVERLAP_COLOR))
+    return segments
 
 
 def build_report(rec_data: dict, log_data: dict, out_path: Path) -> None:
@@ -88,6 +144,14 @@ def build_report(rec_data: dict, log_data: dict, out_path: Path) -> None:
     summary.add_run(f"recursive chunks: {len(rec_data['texts'])} (total tokens: {rec_total_tokens})")
     summary.add_run().add_break()
     summary.add_run(f"logical chunks:   {len(log_chunks)} (total tokens: {log_total_tokens})")
+    summary.add_run().add_break()
+    legend = summary.add_run(
+        "Note: recursive chunks include `chunk_overlap` at boundaries; "
+        "the duplicated head/tail regions in the right column are shown in grey "
+        "and are removed when merged into a logical chunk."
+    )
+    legend.italic = True
+    legend.font.color.rgb = RGBColor(0x70, 0x70, 0x70)
 
     for idx, lc in enumerate(log_chunks):
         source_ids = lc.get("source_chunk_ids", [])
@@ -111,6 +175,15 @@ def build_report(rec_data: dict, log_data: dict, out_path: Path) -> None:
         write_label(left, f"Logical chunk #{lc['chunk_id']} (tokens={lc.get('tokens', '?')})")
         write_chunk_text(left, lc.get("text", ""))
 
+        # precompute pairwise overlaps between consecutive sources of THIS logical chunk
+        source_texts: list[str | None] = [
+            (rec_by_id[sid]["text"] if sid in rec_by_id else None) for sid in source_ids
+        ]
+        overlaps: list[int] = []  # overlaps[i] = overlap between source i and source i+1
+        for i in range(len(source_texts) - 1):
+            a, b = source_texts[i], source_texts[i + 1]
+            overlaps.append(longest_overlap(a, b) if a is not None and b is not None else 0)
+
         for i, sid in enumerate(source_ids):
             rc = rec_by_id.get(sid)
             if i > 0:
@@ -118,8 +191,20 @@ def build_report(rec_data: dict, log_data: dict, out_path: Path) -> None:
             if rc is None:
                 write_label(right, f"Recursive #{sid} (MISSING)")
                 continue
-            write_label(right, f"Recursive #{sid} (tokens={rc.get('tokens', '?')})")
-            write_chunk_text(right, rc.get("text", ""))
+            head_len = overlaps[i - 1] if i > 0 else 0
+            tail_len = overlaps[i] if i < len(overlaps) else 0
+            label = f"Recursive #{sid} (tokens={rc.get('tokens', '?')}"
+            if head_len or tail_len:
+                parts = []
+                if head_len:
+                    parts.append(f"head overlap {head_len} chars")
+                if tail_len:
+                    parts.append(f"tail overlap {tail_len} chars")
+                label += f"; {', '.join(parts)}"
+            label += ")"
+            write_label(right, label)
+            segments = split_for_overlap(rc.get("text", ""), head_len, tail_len)
+            write_styled_chunk_text(right, segments)
 
         if idx < len(log_chunks) - 1:
             doc.add_page_break()

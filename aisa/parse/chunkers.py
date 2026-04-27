@@ -9,6 +9,122 @@ class Chunker(Protocol):
     def split(self, text: str) -> list[str]: ...
 
 
+def _shared_suffix_prefix_len(a: str, b: str, max_scan: int = 1200) -> int:
+    max_len = min(len(a), len(b), max_scan)
+    for n in range(max_len, 0, -1):
+        if a[-n:] == b[:n]:
+            return n
+    return 0
+
+
+def _validate_split_response(resp, win_start: int, win_end: int) -> list[int]:
+    if not isinstance(resp, dict) or not resp:
+        return []
+    raw = resp.get("split_after")
+    if not isinstance(raw, list):
+        return []
+    valid: list[int] = []
+    prev: int = win_start - 1
+    for v in raw:
+        if not isinstance(v, int) or isinstance(v, bool):
+            continue
+        if v < win_start or v >= win_end:
+            continue
+        if v <= prev:
+            continue
+        valid.append(v)
+        prev = v
+    return valid
+
+
+def _llm_split_decisions(
+    llm: BaseLLM,
+    prompt_template: str,
+    pieces: list[str],
+    window: int,
+    stride: int,
+) -> list[int]:
+    n: int = len(pieces)
+    all_splits: set[int] = set()
+    win_start: int = 0
+    while win_start < n:
+        win_end: int = min(win_start + window, n)
+        if win_end - win_start <= 1:
+            break
+        tagged: str = "".join(
+            f"<start_chunk_{i}>{pieces[i]}<end_chunk_{i}>"
+            for i in range(win_start, win_end)
+        )
+        prompt: str = prompt_template.replace("{tagged_text}", tagged)
+        try:
+            resp = llm.query(prompt, verbose=False)
+        except Exception as e:
+            logger.log(
+                "CHUNK",
+                f"Logical chunker LLM call failed ({e}); splitting at window end {win_end - 1}",
+            )
+            all_splits.add(win_end - 1)
+            if win_end >= n:
+                break
+            win_start += stride
+            continue
+
+        valid: list[int] = _validate_split_response(resp, win_start, win_end)
+        if not valid:
+            logger.log(
+                "CHUNK",
+                f"Logical chunker returned no valid splits for window [{win_start},{win_end}); splitting at window end",
+            )
+            valid = [win_end - 1]
+        all_splits.update(valid)
+        if win_end >= n:
+            break
+        win_start += stride
+
+    return sorted(all_splits)
+
+
+def _join_pieces(pieces: list[str], indices: list[int], has_overlap: bool) -> str:
+    if not indices:
+        return ""
+    if not has_overlap or len(indices) == 1:
+        return "".join(pieces[i] for i in indices)
+    text: str = pieces[indices[0]]
+    for idx in indices[1:]:
+        ovl: int = _shared_suffix_prefix_len(text, pieces[idx])
+        text += pieces[idx][ovl:]
+    return text
+
+
+def _assemble_with_overlap_trim(
+    pieces: list[str],
+    split_points: list[int],
+    has_overlap: bool,
+) -> tuple[list[str], list[list[int]]]:
+    if not pieces:
+        return [], []
+
+    boundaries: list[int] = sorted(split_points)
+    groups: list[list[int]] = []
+    start: int = 0
+    for sp in boundaries:
+        groups.append(list(range(start, sp + 1)))
+        start = sp + 1
+    if start < len(pieces):
+        groups.append(list(range(start, len(pieces))))
+
+    chunks: list[str] = []
+    sources: list[list[int]] = []
+    for grp in groups:
+        if not grp:
+            continue
+        text = _join_pieces(pieces, grp, has_overlap)
+        if text.strip():
+            chunks.append(text)
+            sources.append(grp)
+    return chunks, sources
+
+
 class RecursiveTextChunker:
     def __init__(self, chunk_size: int, recursive_overlap: int):
         self.chunk_size: int = chunk_size
@@ -52,7 +168,7 @@ class LLMSemanticChunker:
             chunk_overlap=recursive_overlap,
             length_function=get_token_count,
         )
-        self.prompt_template: str = llm.read_prompt("nemo_logical-chunk")
+        self.prompt_template: str = llm.read_prompt("nemo_logical-chunk-02")
 
     def split(self, text: str) -> list[str]:
         if not text.strip():
@@ -60,80 +176,11 @@ class LLMSemanticChunker:
         pieces: list[str] = self.presplitter.split_text(text)
         if len(pieces) <= 1:
             return pieces
-        split_points: list[int] = self._get_split_points(pieces)
-        chunks: list[str] = self._assemble(pieces, split_points)
+        split_points: list[int] = _llm_split_decisions(
+            self.llm, self.prompt_template, pieces, self.window, self.stride
+        )
+        chunks, _ = _assemble_with_overlap_trim(pieces, split_points, has_overlap=False)
         return self._enforce_size_cap(chunks)
-
-    def _get_split_points(self, pieces: list[str]) -> list[int]:
-        n: int = len(pieces)
-        all_splits: set[int] = set()
-        win_start: int = 0
-        while win_start < n:
-            win_end: int = min(win_start + self.window, n)
-            if win_end - win_start <= 1:
-                break
-            tagged: str = "".join(
-                f"<start_chunk_{i}>{pieces[i]}<end_chunk_{i}>"
-                for i in range(win_start, win_end)
-            )
-            prompt: str = self.prompt_template.replace("{tagged_text}", tagged)
-            try:
-                resp = self.llm.query(prompt, verbose=False)
-            except Exception as e:
-                logger.log(
-                    "CHUNK",
-                    f"Logical chunker LLM call failed ({e}); splitting at window end {win_end - 1}",
-                )
-                all_splits.add(win_end - 1)
-                if win_end >= n:
-                    break
-                win_start += self.stride
-                continue
-
-            valid: list[int] = self._validate_response(resp, win_start, win_end)
-            if not valid:
-                logger.log(
-                    "CHUNK",
-                    f"Logical chunker returned no valid splits for window [{win_start},{win_end}); splitting at window end",
-                )
-                valid = [win_end - 1]
-            all_splits.update(valid)
-            if win_end >= n:
-                break
-            win_start += self.stride
-
-        return sorted(all_splits)
-
-    def _validate_response(self, resp, win_start: int, win_end: int) -> list[int]:
-        if not isinstance(resp, dict) or not resp:
-            return []
-        raw = resp.get("split_after")
-        if not isinstance(raw, list):
-            return []
-        valid: list[int] = []
-        prev: int = win_start - 1
-        for v in raw:
-            if not isinstance(v, int) or isinstance(v, bool):
-                continue
-            if v < win_start or v >= win_end:
-                continue
-            if v <= prev:
-                continue
-            valid.append(v)
-            prev = v
-        return valid
-
-    def _assemble(self, pieces: list[str], split_points: list[int]) -> list[str]:
-        if not split_points:
-            return ["".join(pieces)]
-        chunks: list[str] = []
-        start: int = 0
-        for sp in split_points:
-            chunks.append("".join(pieces[start : sp + 1]))
-            start = sp + 1
-        if start < len(pieces):
-            chunks.append("".join(pieces[start:]))
-        return [c for c in chunks if c.strip()]
 
     def _enforce_size_cap(self, chunks: list[str]) -> list[str]:
         cap: int = self.chunk_size * 2
@@ -148,6 +195,57 @@ class LLMSemanticChunker:
             else:
                 out.append(ch)
         return out
+
+
+class HybridLogicalChunker:
+    def __init__(
+        self,
+        llm: BaseLLM,
+        chunk_size: int,
+        recursive_overlap: int,
+        hybrid_window: int = 8,
+        hybrid_stride: int = 6,
+    ):
+        if hybrid_stride <= 0 or hybrid_stride > hybrid_window:
+            raise ValueError(
+                f"hybrid_stride ({hybrid_stride}) must be in (0, hybrid_window ({hybrid_window})]"
+            )
+        approx_input_tokens: int = hybrid_window * chunk_size
+        if approx_input_tokens > llm.cfg.max_input_tokens:
+            raise ValueError(
+                f"hybrid_window ({hybrid_window}) × chunk_size ({chunk_size}) = {approx_input_tokens} "
+                f"exceeds [llm].max_input_tokens ({llm.cfg.max_input_tokens})"
+            )
+        self.llm: BaseLLM = llm
+        self.chunk_size: int = chunk_size
+        self.recursive_overlap: int = recursive_overlap
+        self.window: int = hybrid_window
+        self.stride: int = hybrid_stride
+        self.recursive: RecursiveTextChunker = RecursiveTextChunker(
+            chunk_size, recursive_overlap
+        )
+        self.prompt_template: str = llm.read_prompt("nemo_logical-chunk")
+        self.last_recursive_pieces: list[str] = []
+        self.last_source_indices: list[list[int]] = []
+
+    def split(self, text: str) -> list[str]:
+        if not text.strip():
+            self.last_recursive_pieces = []
+            self.last_source_indices = []
+            return []
+        pieces: list[str] = self.recursive.split(text)
+        self.last_recursive_pieces = pieces
+        if len(pieces) <= 1:
+            self.last_source_indices = [[i] for i in range(len(pieces))]
+            return pieces
+        split_points: list[int] = _llm_split_decisions(
+            self.llm, self.prompt_template, pieces, self.window, self.stride
+        )
+        chunks, sources = _assemble_with_overlap_trim(
+            pieces, split_points, has_overlap=self.recursive_overlap > 0
+        )
+        self.last_source_indices = sources
+        return chunks
 
 
 def get_chunker(chunk_cfg: dict, llm: Optional[BaseLLM] = None) -> Chunker:
@@ -168,6 +266,16 @@ def get_chunker(chunk_cfg: dict, llm: Optional[BaseLLM] = None) -> Chunker:
             logical_window=chunk_cfg.get("logical_window", 40),
             logical_stride=chunk_cfg.get("logical_stride", 30),
         )
+    if method == "random_logical":
+        if llm is None:
+            raise ValueError("random_logical chunking requires a BaseLLM instance")
+        return HybridLogicalChunker(
+            llm=llm,
+            chunk_size=chunk_cfg.get("chunk_size", 256),
+            recursive_overlap=chunk_cfg.get("recursive_overlap", 50),
+            hybrid_window=chunk_cfg.get("hybrid_window", 8),
+            hybrid_stride=chunk_cfg.get("hybrid_stride", 6),
+        )
     raise ValueError(
-        f"Unknown chunking method: {method!r}; expected one of 'recursive', 'logical'"
+        f"Unknown chunking method: {method!r}; expected one of 'recursive', 'logical', 'random_logical'"
     )
