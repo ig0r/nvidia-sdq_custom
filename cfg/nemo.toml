@@ -59,8 +59,8 @@ recursive_overlap = 50
 prefix = ""
 
 [chunking]
-method = "logical"#"recursive"           # "recursive" | "logical"
-chunk_size = 2048#256               # target tokens per final chunk
+method = "recursive"           # "recursive" | "logical"
+chunk_size = 256               # target tokens per final chunk
 recursive_overlap = 50         # overlap tokens (recursive); also used as fallback re-split overlap for logical
 logical_presplit_tokens = 50   # size of tagged pieces for logical
 logical_window = 40            # tagged pieces per LLM call
