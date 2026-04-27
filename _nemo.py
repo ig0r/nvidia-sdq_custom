@@ -155,6 +155,7 @@ class QAGenerator:
         self.tasks: dict[str, callable] = {
             "chunk": self.run_chunk_only_pipeline,
             "sdg": self.run_sgd_pipeline,
+            "sdg_logical": self.run_sgd_logical_pipeline,
             "prep": self.run_data_prep_pipeline,
         }
 
@@ -407,6 +408,56 @@ class QAGenerator:
             )
         files.write_json(res, f"{self.root_dir}/full_sdg_output.json")
 
+    def _build_logical_contexts(self, file_path: Path, chunks: dictlist) -> dictlist:
+        base_path: str = self.doc_paths[file_path]
+        out_path: str = base_path.replace("-chunks.json", "-logic-ctx.json")
+        doc_id: str = Path(base_path).name.replace("-chunks.json", "")
+
+        if Path(out_path).exists() and not self.overwrite:
+            logger.log("CHUNK", f"{file_path.name}: cache hit -> {out_path}")
+            cached = files.read_json(out_path)
+            return cached.get("contexts", []) if isinstance(cached, dict) else cached
+
+        ctx: dictlist = [
+            {"chunks": [chunk], "tokens": chunk.get("tokens", 0)} for chunk in chunks
+        ]
+
+        budget: int = self.llm.cfg.max_input_tokens
+        for entry in ctx:
+            if entry["tokens"] > budget:
+                cid = entry["chunks"][0].get("chunk_id")
+                logger.log(
+                    "CHUNK",
+                    f"{file_path.name}: chunk_id={cid} tokens={entry['tokens']} > max_input_tokens={budget}",
+                )
+
+        files.write_json({"doc_id": doc_id, "contexts": ctx}, out_path)
+        return ctx
+
+    async def run_sgd_logical_pipeline(self):
+        method: str = self.chunk_cfg.get("method")
+        allowed: set[str] = {"logical", "random_logical"}
+        if method not in allowed:
+            raise ValueError(
+                f"--sdg-logical requires [chunking].method in {sorted(allowed)}; got {method!r}"
+            )
+
+        md_files: list[Path] = sorted(Path(self.input_dir).glob("*.md"))
+        if not md_files:
+            logger.log("NLP", f"No .md files found in {self.input_dir}")
+            return
+
+        for file_path in md_files:
+            chunks: dictlist = self.path2chunks(file_path)
+            ctx: dictlist = self._build_logical_contexts(file_path, chunks)
+            out_path: str = self.doc_paths[file_path].replace(
+                "-chunks.json", "-logic-ctx.json"
+            )
+            logger.log(
+                "CHUNK",
+                f"{file_path.name}: {len(ctx)} logical-context entries -> {out_path}",
+            )
+
     def filter_and_convert(self, sdg_records: dictlist, quality_threshold: float = 7.0) -> dictlist:
         training_docs = []
         question_counter = 0
@@ -585,6 +636,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--chunk-only", action="store_true", help="Run chunking only (stops after path2chunks)")
     parser.add_argument("--sdg", action="store_true", help="Run SDG")
+    parser.add_argument("--sdg-logical", action="store_true", help="Run SDG on logical chunks (Step 1: bundle only)")
     parser.add_argument("--prep", action="store_true", help="Run data prep")
     parser.add_argument("--cfg", type=str, default="./cfg/nemo.toml", help="Cfg")
     parser.add_argument("--input_dir", type=str, help="Input directory")
@@ -599,9 +651,10 @@ if __name__ == "__main__":
     global_cfg["nemo_task"] = {
         "chunk": args.chunk_only,
         "sdg": args.sdg,
+        "sdg_logical": args.sdg_logical,
         "prep": args.prep,
     }
     if not any(global_cfg["nemo_task"].values()):
-        parser.error("no task selected: pass at least one of --chunk-only, --sdg, --prep")
+        parser.error("no task selected: pass at least one of --chunk-only, --sdg, --sdg-logical, --prep")
     files.create_folder(global_cfg["general"]["output_dir"])
     asyncio.run(main(global_cfg))
