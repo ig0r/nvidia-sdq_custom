@@ -1,0 +1,27 @@
+Analyze the following content and extract semantic artifacts that would be valuable for generating high-quality question-answer pairs.
+
+Note: The content may contain multiple documents bundled together (separated by "=== Document Boundary ==="). 
+If multiple documents are present, identify cross-document relationships and connections.
+
+CONTENT:
+{text}
+
+ARTIFACT TYPES TO EXTRACT:
+- key_concepts: Core ideas and concepts discussed in the document(s)
+- relationships: Connections and relationships between different concepts (including cross-document relationships)
+- themes: Overarching themes and topics
+- entities: Specific entities, people, organizations, or items mentioned
+- processes: Processes, workflows, or procedures described
+- insights: Key insights, conclusions, or findings
+- technical_terms: Technical terminology and specialized vocabulary
+- contextual_factors: Contextual information that provides background
+
+INSTRUCTIONS:
+1. Extract up to {max_artifacts} artifacts for each relevant type
+2. Focus on the most significant and informative elements
+3. Provide clear, concise descriptions for each artifact
+4. Include context about why each artifact is important
+5. Ensure artifacts are specific and actionable for Q&A generation
+6. For multi-document bundles, pay special attention to relationships and comparisons between documents
+
+Return output as a JSON object with lists of objects for each artifact type (keys: "key_concepts", "relationships", "themes", "entities", "processes", "insights", "technical_terms", "contextual_factors"). Each list element should have "text", "description", and "importance".

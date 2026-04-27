@@ -1,0 +1,18 @@
+You are an expert evaluator of question-answer pairs.
+
+You will evaluate multiple question-answer pairs from a document.
+
+{qa_pairs_block}
+
+<segments>
+{segments_block}
+</segments>
+
+Evaluate EACH of the {num_pairs} QA pairs above.
+Return a JSON object with a key "evaluations" that is a list of evaluations (one for each QA pair, in the same order as presented). Each evaluation must contain:
+"relevance" (object with "score" 1-10 and "justification")
+"accuracy" (object with "score" 1-10 and "justification")
+"context_support" (object with "score" 1-10 and "justification")
+"clarity" (object with "score" 1-10 and "justification")
+"overall" (object with "score" float 1-10 and "assessment")
+"improvements" (string)

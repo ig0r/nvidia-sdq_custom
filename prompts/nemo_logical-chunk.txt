@@ -1,0 +1,13 @@
+You will receive a sequence of short text chunks wrapped in <start_chunk_N>...<end_chunk_N> tags, where N is the zero-based chunk index. Your job is to identify the positions where the text should be split into semantically coherent sections.
+
+TAGGED TEXT:
+{tagged_text}
+
+INSTRUCTIONS:
+1. A split should occur where the topic, subject, or logical flow meaningfully shifts.
+2. Do NOT split inside a coherent paragraph, list, or tightly-coupled sequence of ideas.
+3. Splits are expressed by the chunk index AFTER which the break occurs (the chunk with that index ends the preceding section; the next chunk starts the following section).
+4. Return at least one split unless the entire window is a single coherent unit.
+5. Indices must be strictly increasing and must fall within the range of the chunk indices provided in the tagged text above.
+
+Return a JSON object with a single key "split_after" whose value is a list of integer chunk indices. Example: {"split_after": [3, 7, 12]}. Return only the JSON object, no other text.

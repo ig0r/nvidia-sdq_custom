@@ -6,10 +6,10 @@ import random
 import numpy as np
 import tiktoken as tikt
 from pathlib import Path
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from aisa.utils import files, logger, dictlist
 from aisa.gen import BaseLLM, LLMConfig, Embedder, EmbedConfig
 from aisa.parse.chunk import RecursiveChunker
+from aisa.parse.chunkers import Chunker, get_chunker
 
 SYS_PROMPTS: dict[str, str] = {
     "artifacts": "You are an expert at analyzing documents and extracting semantic artifacts.",
@@ -108,6 +108,7 @@ class QAGenerator:
         input_dir: str = "./test_md",
         llm: BaseLLM = BaseLLM(LLMConfig()),
         embedder: Embedder = Embedder(EmbedConfig()),
+        chunk_cfg: dict = None,
     ):
         self.llm: BaseLLM = llm
         self.embedder: Embedder = embedder
@@ -130,39 +131,106 @@ class QAGenerator:
         self.min_complexity: int = 3
         self.num_pairs: int = 15
 
+        # chunker (backward-compatible: missing [chunking] falls back to recursive w/ embedding params)
+        if not chunk_cfg:
+            chunk_cfg = {
+                "method": "recursive",
+                "chunk_size": embedder.cfg.chunk_size if embedder.cfg else 256,
+                "recursive_overlap": embedder.cfg.recursive_overlap if embedder.cfg else 50,
+            }
+        self.chunk_cfg: dict = chunk_cfg
+        self.chunker: Chunker = get_chunker(chunk_cfg, llm)
+
         # build directories
-        c_size: int = self.embedder.cfg.chunk_size if self.embedder.cfg else 256
+        method: str = chunk_cfg.get("method", "recursive")
+        c_size: int = chunk_cfg.get("chunk_size", 256)
         self.root_dir: str = root_dir
         self.input_dir: str = input_dir
-        self.chunk_dir: str = files.append_directory(root_dir, f"doc-chunks_{c_size}")
+        self.chunk_dir: str = files.append_directory(
+            root_dir, f"doc-chunks_{c_size}_{method}"
+        )
         self.doc_paths: dict[Path, str] = {}
 
         # main task mapping
         self.tasks: dict[str, callable] = {
+            "chunk": self.run_chunk_only_pipeline,
             "sdg": self.run_sgd_pipeline,
+            "sdg_logical": self.run_sgd_logical_pipeline,
             "prep": self.run_data_prep_pipeline,
         }
+
+    async def run_chunk_only_pipeline(self):
+        md_files: list[Path] = sorted(Path(self.input_dir).glob("*.md"))
+        if not md_files:
+            logger.log("NLP", f"No .md files found in {self.input_dir}")
+            return
+        for file_path in md_files:
+            chunks: dictlist = self.path2chunks(file_path)
+            logger.log(
+                "CHUNK",
+                f"{file_path.name}: {len(chunks)} chunks -> {self.doc_paths[file_path]}",
+            )
 
     def path2chunks(self, file_path: Path) -> dictlist:
         abs_path, filename = files.split_path(str(file_path))
         doc_id: str = "_".join(filename.split("_")[:2])
         base_out: str = f"{self.chunk_dir}/{doc_id}-chunks.json"
         self.doc_paths[file_path] = base_out
-
-        if Path(base_out).exists() and not self.overwrite:
-            return files.read_json(base_out).get("texts", [])
-
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.embedder.cfg.chunk_size,
-            chunk_overlap=self.embedder.cfg.recursive_overlap,
-            length_function=get_token_count,
+        method: str = self.chunk_cfg.get("method", "recursive")
+        is_hybrid: bool = method == "random_logical"
+        cache_path: str = (
+            f"{self.chunk_dir}/{doc_id}-logic-chunks.json" if is_hybrid else base_out
         )
+
+        if Path(cache_path).exists() and not self.overwrite:
+            return files.read_json(cache_path).get("texts", [])
+
         raw_text = file_path.read_text(encoding="utf-8")
         tables = MD_PATTERNS["table"].findall(raw_text)
         images = MD_PATTERNS["image"].findall(raw_text)
         raw_text = MD_PATTERNS["table"].sub("", raw_text)
         raw_text = MD_PATTERNS["image"].sub("", raw_text)
-        raw_chunks: list[str] = splitter.split_text(raw_text)
+        raw_chunks: list[str] = self.chunker.split(raw_text)
+        parsed_file: str = str(abs_path) + "/" + filename
+
+        if is_hybrid:
+            rec_pieces: list[str] = self.chunker.last_recursive_pieces
+            sources: list[list[int]] = self.chunker.last_source_indices
+            rec_chunks: dictlist = [
+                {"text": p, "chunk_id": idx, "tokens": get_token_count(p)}
+                for idx, p in enumerate(rec_pieces)
+            ]
+            files.write_json(
+                {
+                    "doc_id": doc_id,
+                    "parsed_file": parsed_file,
+                    "texts": rec_chunks,
+                    "images": images,
+                    "tables": tables,
+                },
+                base_out,
+            )
+            logic_chunks: dictlist = [
+                {
+                    "text": ch,
+                    "chunk_id": idx,
+                    "tokens": get_token_count(ch),
+                    "source_chunk_ids": sources[idx] if idx < len(sources) else [],
+                }
+                for idx, ch in enumerate(raw_chunks)
+            ]
+            files.write_json(
+                {
+                    "doc_id": doc_id,
+                    "parsed_file": parsed_file,
+                    "texts": logic_chunks,
+                    "images": images,
+                    "tables": tables,
+                },
+                cache_path,
+            )
+            return logic_chunks
+
         chunks: dictlist = [
             {"text": ch, "chunk_id": idx, "tokens": get_token_count(ch)}
             for idx, ch in enumerate(raw_chunks)
@@ -170,7 +238,7 @@ class QAGenerator:
         files.write_json(
             {
                 "doc_id": doc_id,
-                "parsed_file": str(abs_path) + "/" + filename,
+                "parsed_file": parsed_file,
                 "texts": chunks,
                 "images": images,
                 "tables": tables,
@@ -340,6 +408,56 @@ class QAGenerator:
             )
         files.write_json(res, f"{self.root_dir}/full_sdg_output.json")
 
+    def _build_logical_contexts(self, file_path: Path, chunks: dictlist) -> dictlist:
+        base_path: str = self.doc_paths[file_path]
+        out_path: str = base_path.replace("-chunks.json", "-logic-ctx.json")
+        doc_id: str = Path(base_path).name.replace("-chunks.json", "")
+
+        if Path(out_path).exists() and not self.overwrite:
+            logger.log("CHUNK", f"{file_path.name}: cache hit -> {out_path}")
+            cached = files.read_json(out_path)
+            return cached.get("contexts", []) if isinstance(cached, dict) else cached
+
+        ctx: dictlist = [
+            {"chunks": [chunk], "tokens": chunk.get("tokens", 0)} for chunk in chunks
+        ]
+
+        budget: int = self.llm.cfg.max_input_tokens
+        for entry in ctx:
+            if entry["tokens"] > budget:
+                cid = entry["chunks"][0].get("chunk_id")
+                logger.log(
+                    "CHUNK",
+                    f"{file_path.name}: chunk_id={cid} tokens={entry['tokens']} > max_input_tokens={budget}",
+                )
+
+        files.write_json({"doc_id": doc_id, "contexts": ctx}, out_path)
+        return ctx
+
+    async def run_sgd_logical_pipeline(self):
+        method: str = self.chunk_cfg.get("method")
+        allowed: set[str] = {"logical", "random_logical"}
+        if method not in allowed:
+            raise ValueError(
+                f"--sdg-logical requires [chunking].method in {sorted(allowed)}; got {method!r}"
+            )
+
+        md_files: list[Path] = sorted(Path(self.input_dir).glob("*.md"))
+        if not md_files:
+            logger.log("NLP", f"No .md files found in {self.input_dir}")
+            return
+
+        for file_path in md_files:
+            chunks: dictlist = self.path2chunks(file_path)
+            ctx: dictlist = self._build_logical_contexts(file_path, chunks)
+            out_path: str = self.doc_paths[file_path].replace(
+                "-chunks.json", "-logic-ctx.json"
+            )
+            logger.log(
+                "CHUNK",
+                f"{file_path.name}: {len(ctx)} logical-context entries -> {out_path}",
+            )
+
     def filter_and_convert(self, sdg_records: dictlist, quality_threshold: float = 7.0) -> dictlist:
         training_docs = []
         question_counter = 0
@@ -503,6 +621,7 @@ async def main(cfg: dict):
         input_dir=cfg["general"]["data_dir"],
         llm=BaseLLM(LLMConfig(**cfg["llm"])),
         embedder=Embedder(EmbedConfig(**cfg["embedding"])),
+        chunk_cfg=cfg.get("chunking"),
     )
 
     for task_name, should_run in cfg["nemo_task"].items():
@@ -515,25 +634,27 @@ async def main(cfg: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--chunk-only", action="store_true", help="Run chunking only (stops after path2chunks)")
     parser.add_argument("--sdg", action="store_true", help="Run SDG")
+    parser.add_argument("--sdg-logical", action="store_true", help="Run SDG on logical chunks (Step 1: bundle only)")
     parser.add_argument("--prep", action="store_true", help="Run data prep")
-    parser.add_argument("--cfg", type=str, default="./example-config.toml", help="Cfg")
+    parser.add_argument("--cfg", type=str, default="./cfg/nemo.toml", help="Cfg")
     parser.add_argument("--input_dir", type=str, help="Input directory")
     parser.add_argument("--output_dir", type=str, help="Output directory")
-    global_cfg: dict = files.read_toml(parser.parse_args().cfg)
-    global_cfg["general"]["output_dir"] = (
-        parser.parse_args().output_dir
-        if parser.parse_args().output_dir
-        else global_cfg["general"]["output_dir"]
-    )
-    global_cfg["general"]["data_dir"] = (
-        parser.parse_args().input_dir
-        if parser.parse_args().input_dir
-        else global_cfg["general"]["data_dir"]
-    )
+    args = parser.parse_args()
+
+    global_cfg: dict = files.read_toml(args.cfg)
+    if args.output_dir:
+        global_cfg["general"]["output_dir"] = args.output_dir
+    if args.input_dir:
+        global_cfg["general"]["data_dir"] = args.input_dir
     global_cfg["nemo_task"] = {
-        "sdg": parser.parse_args().sdg,
-        "prep": parser.parse_args().prep,
+        "chunk": args.chunk_only,
+        "sdg": args.sdg,
+        "sdg_logical": args.sdg_logical,
+        "prep": args.prep,
     }
+    if not any(global_cfg["nemo_task"].values()):
+        parser.error("no task selected: pass at least one of --chunk-only, --sdg, --sdg-logical, --prep")
     files.create_folder(global_cfg["general"]["output_dir"])
     asyncio.run(main(global_cfg))

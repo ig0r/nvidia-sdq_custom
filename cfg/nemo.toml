@@ -58,6 +58,18 @@ chunk_size = 256
 recursive_overlap = 50
 prefix = ""
 
+[chunking]
+method = "random_logical"#"recursive"           # "recursive" | "logical" | "random_logical"
+chunk_size = 256               # target tokens per final chunk
+recursive_overlap = 50         # overlap tokens (recursive / random_logical pre-split); also fallback re-split overlap
+# logical (50-tok pre-split + LLM windowing)
+logical_presplit_tokens = 50   # size of tagged pieces (logical only)
+logical_window = 40            # tagged pieces per LLM call (logical only)
+logical_stride = 30            # slide amount (logical only, <= logical_window)
+# random_logical (recursive pre-split + LLM grouping)
+hybrid_window = 8              # recursive pieces per LLM call (random_logical only); hybrid_window × chunk_size <= [llm].max_input_tokens
+hybrid_stride = 6              # slide amount (random_logical only, <= hybrid_window)
+
 # ANALYSIS SETTINGS
 [jsa]
 accidents_file = "./rawdata/sir.csv" # imis or sir

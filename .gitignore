@@ -1,2 +1,10 @@
 data
 .DS_Store
+.venv
+*__pycache__
+rawdata
+data.0
+rawdata.0
+.env
+data.1
+small_corpus

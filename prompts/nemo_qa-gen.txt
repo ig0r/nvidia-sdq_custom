@@ -1,0 +1,67 @@
+You are an expert at extracting question and answer pairs from provided context/transcript/segments.
+
+<document_facts_block>:
+{facts_block}
+</document_facts_block>
+
+<context_block>:
+{context_block}
+</context_block>
+
+Guidelines:
+1. Generate questions with varying complexity levels between 1 (simple) and 5 (complex):
+   - All questions MUST require understanding connections between different parts of the context/transcript/segments
+   - Questions should test deep understanding, not simple facts
+   - Do not mention the existence of a context/transcript in the generated question like "in the transcript", "from the given context", or "in Segment 148". Produce a natural, standalone question.
+   - Only use facts present in the provided context/transcript; if missing, say you cannot generate a question.
+   - Example: "How does the speaker's initial explanation of X relate to the later implementation of Y?"
+
+2. Question Types to Generate (for the "query_type" field - ONLY these 3 values allowed):
+   - "multi_hop" ({query_counts_multi_hop} questions): Connect {min_hops}-{max_hops} separated segments
+   - "structural" ({query_counts_structural} questions): Focus on relationships between concepts
+   - "contextual" ({query_counts_contextual} questions): Require surrounding context to understand
+   - Use the cross-part context snippets to connect evidence that lives outside the current transcript section
+
+3. Reasoning Types to Include (for the "reasoning_type" field - ONLY these 7 values allowed):
+   - "factual" ({reasoning_counts_factual} questions): Ask for complex facts that require synthesizing multiple pieces of information (NOT simple lookups)
+   - "relational" ({reasoning_counts_relational} questions): Ask how data points compare or correlate across different segments
+   - "inferential" ({reasoning_counts_inferential} questions): Ask about conclusions or implications requiring synthesis
+   - "temporal" ({reasoning_counts_temporal} questions): Ask about changes or events over time across segments
+   - "procedural" ({reasoning_counts_procedural} questions): Ask about complex multi-step processes or guidelines
+   - "visual" ({reasoning_counts_visual} questions): Ask about visual details requiring cross-reference
+   - "causal" ({reasoning_counts_causal} questions): Ask about cause-effect chains spanning segments
+
+4. IMPORTANT - Orthogonal Distributions (query_type and reasoning_type are SEPARATE fields):
+   - Each question must have BOTH a query_type (multi_hop/structural/contextual) AND a reasoning_type (factual/relational/inferential/temporal/procedural/visual/causal)
+   - These are TWO DIFFERENT fields - do NOT put reasoning types in the query_type field!
+   - For example: A question can be query_type="multi_hop" with reasoning_type="procedural"
+   - Ensure the final distribution matches both specified percentages
+
+5. **IMPORTANT - Segment Identification**:
+   - The content below contains segments formatted as "Segment N (HH:MM:SS - HH:MM:SS): text" or "Segment N [Doc: doc_id] (HH:MM:SS - HH:MM:SS): text" where N starts from 1
+   - The "[Doc: doc_id]" tag indicates which document the segment belongs to (for multi-document bundles)
+   - For each question-answer pair you generate, identify ALL segment numbers FROM which the question is derived
+   - These segments are the source material that should be retrieved when someone asks this question
+   - Record these segment numbers in the "segment_ids" field as a list of integers (e.g., [1, 4, 8])
+
+6. For Each Question:
+   - Must have complexity level {min_complexity} or higher
+   - Generate the question FROM the identified segments (these segments are the source material)
+   - Multi-hop questions must specify hop_count ({min_hops}-{max_hops})
+   - Provide hop_contexts: a list where each hop includes "hop_number", "segment_ids" (the source segments for this hop), and "summary" (a concise summary describing the supporting segments).
+
+7. Generate {num_pairs} distinct question and answer pairs.
+
+The output should be a JSON object with a "pairs" field containing an array of {num_pairs} objects, where each object contains:
+  - "question": the question, requiring understanding of the contexts/transcripts/segments without explicitly referencing the context/transcript/segments in the question
+  - "answer": comprehensive answer from the contexts/transcripts/segments without explicitly referencing the context/transcript/segments in the answer
+  - "question_complexity": numeric score {min_complexity}-5
+  - "query_type": MUST be exactly one of these three values: "multi_hop", "structural", or "contextual" (NO other values allowed - do NOT use reasoning types here)
+  - "reasoning_type": MUST be exactly one of these seven values: "factual", "relational", "inferential", "temporal", "procedural", "visual", or "causal" (this is DIFFERENT from query_type)
+  - "segment_ids": list of segment numbers (e.g., [1, 4, 8]) that are the source material for this question (these should be retrieved when the question is asked)
+  - "hop_count": number of hops ({min_hops}-{max_hops})
+  - "hop_contexts": array of hop detail objects with "hop_number", "segment_ids", "summary"
+
+CRITICAL: "query_type" and "reasoning_type" are TWO SEPARATE FIELDS with different allowed values. Do NOT mix them up:
+  - query_type can ONLY be: "multi_hop", "structural", "contextual"
+  - reasoning_type can ONLY be: "factual", "relational", "inferential", "temporal", "procedural", "visual", "causal"
