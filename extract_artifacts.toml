@@ -12,8 +12,10 @@ input_dir = "./data/_test/chunk_test-random-logic/doc-chunks_256_random_logical"
 [langextract]
 model = "gpt-4o-mini"
 temperature = 0.0
-extraction_passes = 2            # higher = more cost; A/B 1 vs 2 once corpus is settled
-max_char_buffer = 10000          # disables internal langextract sub-chunking for our short logical chunks
-prompt_name = "nemo_logic-artifacts-02"
+extraction_passes = 2                          # span-level recall passes
+chunk_extraction_passes = 1                    # chunk-level passes (deterministic)
+max_char_buffer = 10000                        # disables internal langextract sub-chunking for our short logical chunks
+prompt_name_span = "nemo_logic-artifacts-03-span"
+prompt_name_chunk = "nemo_logic-artifacts-03-chunk"
 prompt_lib = "./prompts"
 # api_key resolved from .env::OPENAI_API_KEY at runtime if absent here

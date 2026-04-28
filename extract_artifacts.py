@@ -35,7 +35,7 @@ for _name, _no, _icon in (("CHUNK", 14, "📦"), ("NLP", 10, "🧠")):
         pass
 
 
-EXTRACTION_CLASSES: list[str] = [
+SPAN_LEVEL_CLASSES: list[str] = [
     "requirement",
     "condition",
     "exception",
@@ -59,8 +59,16 @@ EXTRACTION_CLASSES: list[str] = [
     "evidence",
 ]
 
+CHUNK_LEVEL_CLASSES: list[str] = [
+    "chunk_summary",
+    "chunk_topic",
+    "pavement_engineering_term",
+]
 
-PAVEMENT_EXAMPLES: list[lx.data.ExampleData] = [
+EXTRACTION_CLASSES: list[str] = SPAN_LEVEL_CLASSES + CHUNK_LEVEL_CLASSES
+
+
+SPAN_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
     lx.data.ExampleData(
         text=(
             "If the projected 18-kip ESALs vary substantially between adjacent "
@@ -477,14 +485,219 @@ PAVEMENT_EXAMPLES: list[lx.data.ExampleData] = [
 ]
 
 
+CHUNK_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
+    # Example A — manual/spec style. Same text as SPAN_LEVEL_EXAMPLES[1] (RCA mix design),
+    # demonstrating chunk_summary span = last complete sentence of the chunk.
+    lx.data.ExampleData(
+        text=(
+            "Recycled concrete aggregate, abbreviated RCA, is aggregate produced by "
+            "crushing reclaimed hydraulic-cement concrete. The volumetric method "
+            "displaces a known volume of water from a calibrated bowl to measure the "
+            "entrained air content of fresh RCA concrete. The water-to-cementitious-"
+            "materials ratio is computed as w/cm = m_w / m_cm, where m_w is the mass "
+            "of mixing water and m_cm is the mass of all cementitious materials. The "
+            "coarse RCA replacement level governs both fresh and hardened mixture "
+            "properties and is expressed as a percentage on a volume basis. Coarse "
+            "RCA replacement greater than 50 percent triggers a strength verification "
+            "test prior to placement. RCA concrete is permitted in this specification "
+            "except for projects where the source concrete is known to be affected by "
+            "alkali-silica reaction. Use of RCA is limited to mixtures with a w/cm at "
+            "or below 0.45. To proportion a trial RCA concrete mixture, the designer "
+            "shall first batch a one-cubic-yard trial; then measure slump, air content, "
+            "and unit weight; finally adjust the paste content and retest if any "
+            "property falls outside the target range. For mechanistic-empirical rigid "
+            "pavement design, the analysis assumes a representative 28-day flexural "
+            "strength of 600 psi unless project-specific testing supports a different "
+            "value, because trial batching is generally not available before the design "
+            "phase."
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="chunk_summary",
+                extraction_text=(
+                    "For mechanistic-empirical rigid pavement design, the analysis "
+                    "assumes a representative 28-day flexural strength of 600 psi "
+                    "unless project-specific testing supports a different value, "
+                    "because trial batching is generally not available before the "
+                    "design phase."
+                ),
+                attributes={
+                    "summary": (
+                        "The chunk specifies how to proportion RCA concrete: defines "
+                        "RCA, names the volumetric air-content test method, gives the "
+                        "w/cm formula, sets replacement-level limits and an exception "
+                        "for ASR-affected source concrete, describes the trial-mix "
+                        "procedure, and states the default 28-day flexural strength "
+                        "assumption used for ME pavement design."
+                    ),
+                    "document_function": "definition and material guidance",
+                    "scope": "RCA concrete mix design and rigid pavement design with RCA",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="trial RCA concrete mixture",
+                attributes={
+                    "topic": "RCA concrete mix design",
+                    "topic_role": "primary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="mechanistic-empirical rigid pavement design",
+                attributes={
+                    "topic": "rigid pavement design",
+                    "topic_role": "secondary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="alkali-silica reaction",
+                attributes={
+                    "topic": "materials durability",
+                    "topic_role": "secondary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="RCA",
+                attributes={
+                    "term": "RCA",
+                    "normalized_term": "recycled concrete aggregate",
+                    "term_category": "material",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="w/cm",
+                attributes={
+                    "term": "w/cm",
+                    "normalized_term": "water-to-cementitious-materials ratio",
+                    "term_category": "design_parameter",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="28-day flexural strength",
+                attributes={
+                    "term": "28-day flexural strength",
+                    "normalized_term": "28-day flexural strength",
+                    "term_category": "design_parameter",
+                },
+            ),
+        ],
+    ),
+    # Example B — report style. Same text as SPAN_LEVEL_EXAMPLES[2] (RCA + brick-street findings).
+    lx.data.ExampleData(
+        text=(
+            "A statistical study using data from more than 100 peer-reviewed studies "
+            "indicated that RCA concrete typically exhibits a 10 to 15 percent reduction "
+            "in compressive strength compared with companion conventional concrete "
+            "mixtures. Transverse cracking is the dominant distress observed in the "
+            "existing pavement section. This cracking results from the brittleness of "
+            "the brick base combined with the flexibility of the asphalt overlay. The "
+            "investigation team selected the ultrathin whitetopping option over the "
+            "asphaltic concrete overlay alternative because the whitetopping demonstrated "
+            "better long-term performance in similar climates. Field deflection testing "
+            "using the falling weight deflectometer recorded deflections under 8 mils "
+            "across all test locations on the Oskaloosa project. Practitioners should "
+            "monitor stockpile moisture content closely, since sudden drops in moisture "
+            "have been linked to rapid workability loss during paving. Use of high-"
+            "replacement fine RCA in interstate shoulders introduces an elevated risk of "
+            "premature surface scaling under freeze-thaw exposure. Engineers should "
+            "consider blending RCA with virgin aggregate when the source concrete is "
+            "variable, because blending reduces the proportion of adhered mortar and "
+            "stabilizes the strength of the resulting mixture."
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="chunk_summary",
+                extraction_text=(
+                    "Engineers should consider blending RCA with virgin aggregate when "
+                    "the source concrete is variable, because blending reduces the "
+                    "proportion of adhered mortar and stabilizes the strength of the "
+                    "resulting mixture."
+                ),
+                attributes={
+                    "summary": (
+                        "The chunk reports an observed reduction in RCA-concrete "
+                        "compressive strength relative to conventional mixtures, "
+                        "identifies transverse cracking and its cause in an existing "
+                        "brick-based pavement, documents the team's selection of "
+                        "ultrathin whitetopping over an asphaltic concrete overlay, "
+                        "and recommends practices for stockpile moisture monitoring "
+                        "and RCA blending where source concrete is variable."
+                    ),
+                    "document_function": "finding, decision, and recommendation",
+                    "scope": "RCA concrete pavement performance and brick-street rehabilitation",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="whitetopping option",
+                attributes={
+                    "topic": "pavement rehabilitation",
+                    "topic_role": "primary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="compressive strength",
+                attributes={
+                    "topic": "materials performance",
+                    "topic_role": "secondary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="chunk_topic",
+                extraction_text="blending RCA with virgin aggregate",
+                attributes={
+                    "topic": "RCA concrete mix design",
+                    "topic_role": "secondary",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="RCA",
+                attributes={
+                    "term": "RCA",
+                    "normalized_term": "recycled concrete aggregate",
+                    "term_category": "material",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="falling weight deflectometer",
+                attributes={
+                    "term": "falling weight deflectometer",
+                    "normalized_term": "falling weight deflectometer",
+                    "term_category": "test_method",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="pavement_engineering_term",
+                extraction_text="ultrathin whitetopping",
+                attributes={
+                    "term": "ultrathin whitetopping",
+                    "normalized_term": "ultrathin whitetopping",
+                    "term_category": "construction",
+                },
+            ),
+        ],
+    ),
+]
+
+
 @dataclass
 class LXConfig:
     model: str = "gpt-4o-mini"
     api_key: str | None = None
     temperature: float = 0.0
-    extraction_passes: int = 2
+    extraction_passes: int = 2                # span-level recall passes
+    chunk_extraction_passes: int = 1          # chunk-level passes (deterministic)
     max_char_buffer: int = 10000
-    prompt_name: str = "nemo_logic-artifacts-02"
+    prompt_name_span: str = "nemo_logic-artifacts-03-span"
+    prompt_name_chunk: str = "nemo_logic-artifacts-03-chunk"
     prompt_lib: str = "./prompts"
 
 
@@ -497,16 +710,28 @@ class PavementExtractor:
                 "OPENAI_API_KEY not set (env or [langextract].api_key in cfg)"
             )
         self.api_key: str = api_key
-        prompt_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name}.txt"
-        if not prompt_path.exists():
-            raise FileNotFoundError(f"Prompt not found: {prompt_path}")
-        self.prompt: str = prompt_path.read_text(encoding="utf-8")
+        span_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name_span}.txt"
+        chunk_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name_chunk}.txt"
+        missing: list[str] = [str(p) for p in (span_path, chunk_path) if not p.exists()]
+        if missing:
+            raise FileNotFoundError(f"Prompt(s) not found: {missing}")
+        self.prompt_span: str = span_path.read_text(encoding="utf-8")
+        self.prompt_chunk: str = chunk_path.read_text(encoding="utf-8")
+
+    def _char_iv(self, ext) -> dict | None:
+        ci = ext.char_interval
+        return (
+            {"start_pos": ci.start_pos, "end_pos": ci.end_pos}
+            if ci is not None
+            else None
+        )
 
     def extract(self, text: str, doc_id: str, chunk_id: int) -> dict[str, list[dict]]:
-        result = lx.extract(
+        # Span-level call: 21 classes, v2 prompt body, recall passes.
+        span_result = lx.extract(
             text_or_documents=text,
-            prompt_description=self.prompt,
-            examples=PAVEMENT_EXAMPLES,
+            prompt_description=self.prompt_span,
+            examples=SPAN_LEVEL_EXAMPLES,
             model_id=self.cfg.model,
             api_key=self.api_key,
             temperature=self.cfg.temperature,
@@ -514,22 +739,29 @@ class PavementExtractor:
             max_char_buffer=self.cfg.max_char_buffer,
             show_progress=False,
         )
+        # Chunk-level call: 3 classes, dedicated prompt, deterministic passes.
+        chunk_result = lx.extract(
+            text_or_documents=text,
+            prompt_description=self.prompt_chunk,
+            examples=CHUNK_LEVEL_EXAMPLES,
+            model_id=self.cfg.model,
+            api_key=self.api_key,
+            temperature=self.cfg.temperature,
+            extraction_passes=self.cfg.chunk_extraction_passes,
+            max_char_buffer=self.cfg.max_char_buffer,
+            show_progress=False,
+        )
         bucketed: dict[str, list[dict]] = {}
         ext_idx: int = 0
-        for ext in (result.extractions or []):
+        # Span-level: gate against SPAN_LEVEL_CLASSES; promote description/significance.
+        for ext in (span_result.extractions or []):
             cls: str = ext.extraction_class
-            if cls not in EXTRACTION_CLASSES:
+            if cls not in SPAN_LEVEL_CLASSES:
                 logger.log(
                     "NLP",
-                    f"{doc_id} chunk {chunk_id}: dropping out-of-vocab class {cls!r}",
+                    f"{doc_id} chunk {chunk_id}: span call dropped class {cls!r}",
                 )
                 continue
-            ci = ext.char_interval
-            char_iv: dict | None = (
-                {"start_pos": ci.start_pos, "end_pos": ci.end_pos}
-                if ci is not None
-                else None
-            )
             attrs: dict = dict(ext.attributes or {})
             description: str = attrs.pop("description", "") or ""
             significance: str | None = attrs.pop("significance", None) or None
@@ -538,8 +770,25 @@ class PavementExtractor:
                 "text": ext.extraction_text,
                 "description": description,
                 "significance": significance,
-                "char_interval": char_iv,
+                "char_interval": self._char_iv(ext),
                 "attributes": attrs,
+            }
+            bucketed.setdefault(cls, []).append(entry)
+            ext_idx += 1
+        # Chunk-level: gate against CHUNK_LEVEL_CLASSES; bypass description/significance promotion.
+        for ext in (chunk_result.extractions or []):
+            cls = ext.extraction_class
+            if cls not in CHUNK_LEVEL_CLASSES:
+                logger.log(
+                    "NLP",
+                    f"{doc_id} chunk {chunk_id}: chunk call dropped class {cls!r}",
+                )
+                continue
+            entry = {
+                "artifact_id": f"{doc_id}_chunk_{chunk_id}_art_{ext_idx}",
+                "text": ext.extraction_text,
+                "char_interval": self._char_iv(ext),
+                "attributes": dict(ext.attributes or {}),
             }
             bucketed.setdefault(cls, []).append(entry)
             ext_idx += 1

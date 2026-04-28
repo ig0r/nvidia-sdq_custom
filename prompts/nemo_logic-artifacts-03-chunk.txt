@@ -1,0 +1,28 @@
+Extract chunk-level artifacts that describe the whole chunk.
+Chunk-level artifacts give compact chunk-wide context for retrieval, filtering, and downstream question generation.
+Use exact source text from the chunk for extraction_text. Do not paraphrase extraction_text.
+Allowed extraction classes (use exactly these class names — emit nothing under any other class name):
+- chunk_summary: a concise, source-grounded overview of the whole chunk.
+- chunk_topic: a normalized topic label describing a major subject of the whole chunk.
+- pavement_engineering_term: an important pavement engineering term explicitly present in the chunk.
+Quantity rules:
+- chunk_summary: extract exactly one per chunk.
+- chunk_topic: extract one to five per chunk.
+- pavement_engineering_term: extract zero or more, but only important domain terms.
+Rules for chunk_summary:
+- Set extraction_text to the last complete sentence of the chunk. If the chunk ends mid-fragment (a list item, equation, or partial line), use the closest preceding complete sentence.
+- Provide the actual chunk overview in the summary attribute as one or two sentences grounded in the chunk. Do not add information not supported by the chunk.
+- Set document_function to describe what the chunk is doing, using one or more of: requirement, procedure, design guidance, calculation guidance, definition, approval workflow, material guidance, construction guidance, testing guidance, maintenance guidance, finding, recommendation, rationale, issue, risk, evidence, example.
+- Set scope when the chunk states where, when, or to what it applies.
+Rules for chunk_topic:
+- Use an exact source span that supports the topic as extraction_text.
+- Store the normalized topic label in the topic attribute. Use concise labels, not full sentences.
+- Prefer pavement-specific labels such as: pavement design analysis, pavement type determination, traffic loading, ESAL analysis, rigid pavement design, flexible pavement design, subgrade characterization, resilient modulus, CBR, k-value, drainage, base and subbase materials, asphalt materials, concrete materials, pavement rehabilitation, pavement preservation, construction requirements, quality assurance, testing and inspection, approval workflow, design submission, design exceptions, life-cycle cost analysis, standards and specifications.
+- Set topic_role to primary for the main topic of the chunk; use secondary for other important topics.
+- Do not invent topics unsupported by the chunk.
+Rules for pavement_engineering_term:
+- Use the exact term as extraction_text. Store the exact term in the term attribute.
+- Store a canonical version of the term in the normalized_term attribute when useful (for example, normalize "18-kip ESALs" to "18-kip ESAL").
+- Assign term_category when clear, using one of: traffic, pavement_type, design_parameter, material, layer, method, test_method, distress, construction, maintenance, organization, form, software, other.
+- Extract only domain terms explicitly present in the chunk. Do not add inferred or related terms.
+- Do not extract generic words such as pavement, design, project, section, or material unless they are part of a meaningful technical term.

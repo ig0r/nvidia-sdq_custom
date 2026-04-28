@@ -110,9 +110,13 @@ Standalone script that reads each `{doc_id}-logic-chunks.json`, sends every logi
 .venv/bin/python extract_artifacts.py --cfg cfg/nemo.toml
 ```
 
-### Extraction-class vocabulary (21 classes, frozen)
+### Extraction-class vocabulary (24 classes, frozen)
 
-Normative/functional taxonomy: the classes describe what the text *does* (imposes a rule, states a condition, reports a finding) rather than the domain entity it names.
+Two named subsets, both extracted per chunk via separate `lx.extract` calls:
+
+#### Span-level vocabulary (21 classes)
+
+Normative/functional taxonomy: the classes describe what specific clauses *do* (impose a rule, state a condition, report a finding) rather than the domain entity they name.
 
 | Class | What it captures |
 |---|---|
@@ -138,13 +142,27 @@ Normative/functional taxonomy: the classes describe what the text *does* (impose
 | `risk` | possible adverse outcome, uncertainty, or failure mode |
 | `evidence` | data, observation, test result, measurement, or cited basis supporting a finding/decision/rationale/requirement |
 
-Out-of-vocabulary classes returned by the model are dropped with an `"NLP"` log line so prompt drift is observable. The class list lives in `extract_artifacts.py::EXTRACTION_CLASSES`.
+#### Chunk-level vocabulary (3 classes)
 
-Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title`, `page_number`, `header`, `footer`, `table_of_contents_entry`, `caption_alone`, `revision_date`, `document_title`) appear only inside `attributes.context_reference` (or `attributes.source_reference`) of a meaningful artifact, never as standalone extractions.
+Compact chunk-wide signals for downstream retrieval, filtering, and entity linking. Extracted via a separate `lx.extract` call against `prompts/nemo_logic-artifacts-03-chunk.txt`.
+
+| Class | What it captures |
+|---|---|
+| `chunk_summary` | concise source-grounded overview of the whole chunk; `extraction_text` is the chunk's last complete sentence; the actual summary lives in `attributes.summary` (1-2 sentences); also carries `attributes.document_function` and `attributes.scope` |
+| `chunk_topic` | normalized topic label for a major subject of the chunk; `attributes.topic` (label) + `attributes.topic_role` (`primary` or `secondary`) |
+| `pavement_engineering_term` | important domain term explicitly present in the chunk; `attributes.term` (verbatim), `attributes.normalized_term` (canonical), `attributes.term_category` (e.g. `traffic`, `material`, `test_method`, `design_parameter`) |
+
+**Quantity rules** (prompt-only, not code-enforced): exactly 1 `chunk_summary` per chunk; 1-5 `chunk_topic` per chunk; 0+ `pavement_engineering_term` per chunk (only important domain terms — generic words like "pavement", "design", "project" are excluded unless part of a meaningful technical term).
+
+Out-of-scope classes returned by either call are dropped with an `"NLP"` log line so prompt drift is observable. Each call has its own gate (span call → `SPAN_LEVEL_CLASSES`; chunk call → `CHUNK_LEVEL_CLASSES`); cross-mode emissions are dropped at the per-call gate. The class lists live in `extract_artifacts.py::SPAN_LEVEL_CLASSES`, `::CHUNK_LEVEL_CLASSES`, and the union `::EXTRACTION_CLASSES`.
+
+Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title`, `page_number`, `header`, `footer`, `table_of_contents_entry`, `caption_alone`, `revision_date`, `document_title`) appear only inside span-level `attributes.context_reference` (or `attributes.source_reference`) of a meaningful artifact — never as standalone extractions, never as `pavement_engineering_term` outputs.
 
 ### Output schema
 
 `-logic-artifacts.json` wraps a per-chunk artifacts list with the document id. Each extraction carries an `artifact_id` of the form `{doc_id}_chunk_{chunk_id}_art_{idx}` (where `idx` increments across all classes within the chunk), making provenance fully traceable from any single ID.
+
+**Per-extraction shape varies by class group.** Span-level entries have 6 top-level keys (including `description` and `significance`); chunk-level entries have 4 (no `description`/`significance` — those are span-level concepts; the chunk-level canonical content lives inside `attributes`).
 
 ```json
 {
@@ -170,7 +188,45 @@ Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title
           }
         ],
         "condition": [...],
-        "best_practice": [...]
+        "best_practice": [...],
+        "chunk_summary": [
+          {
+            "artifact_id": "TBF000027_UKN000_chunk_0_art_8",
+            "text": "Good pavement design practice is to provide adequate drainage to prevent water from being trapped within the pavement structure, which can reduce pavement performance.",
+            "char_interval": {"start_pos": 233, "end_pos": 401},
+            "attributes": {
+              "summary": "The chunk establishes when separate pavement design analyses are required, identifies the designer's responsibility to submit them for District approval, and recommends adequate drainage as best practice.",
+              "document_function": "requirement, approval workflow, and best practice",
+              "scope": "pavement design analyses for adjacent construction sections"
+            }
+          }
+        ],
+        "chunk_topic": [
+          {
+            "artifact_id": "TBF000027_UKN000_chunk_0_art_9",
+            "text": "pavement design analyses",
+            "char_interval": {"start_pos": 99, "end_pos": 123},
+            "attributes": {"topic": "pavement design analysis", "topic_role": "primary"}
+          },
+          {
+            "artifact_id": "TBF000027_UKN000_chunk_0_art_10",
+            "text": "18-kip ESALs",
+            "char_interval": {"start_pos": 19, "end_pos": 31},
+            "attributes": {"topic": "traffic loading", "topic_role": "secondary"}
+          }
+        ],
+        "pavement_engineering_term": [
+          {
+            "artifact_id": "TBF000027_UKN000_chunk_0_art_12",
+            "text": "18-kip ESALs",
+            "char_interval": {"start_pos": 19, "end_pos": 31},
+            "attributes": {
+              "term": "18-kip ESALs",
+              "normalized_term": "18-kip ESAL",
+              "term_category": "traffic"
+            }
+          }
+        ]
       }
     },
     {
@@ -183,9 +239,13 @@ Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title
 }
 ```
 
-`extractions` keys are a subset of the 21-class vocabulary (omitted when empty). Per-extraction keys are `{artifact_id, text, description, significance, char_interval, attributes}`: `description` is always a string (defaults to `""` if the model omits it); `significance` is either `null` or a non-empty string (the prompt instructs the model to populate it only when the source text states or directly supports the artifact's purpose, effect, consequence, or importance); `attributes` carries only type-specific keys (e.g. `modality`, `symbol`, `purpose`) plus the remaining common attributes (`subject`, `scope`, `context_reference`, `source_cue`) — it does *not* carry `description` or `significance`. `char_interval` is preserved verbatim from `langextract` and lets downstream steps surface evidence offsets in QA pairs. Failed chunks emit `"extractions": {}` with an `"error"` field instead of aborting the doc.
+`extractions` keys are a subset of the 24-class vocabulary (omitted when empty). Per-extraction keys depend on the class group:
+- **Span-level** (`requirement`, `condition`, …, `evidence`): `{artifact_id, text, description, significance, char_interval, attributes}`. `description` is always a string (defaults to `""` if the model omits it); `significance` is `null` or a non-empty string (the prompt instructs the model to populate it only when the source states or directly supports the artifact's purpose, effect, consequence, or importance); `attributes` carries only type-specific keys (e.g. `modality`, `symbol`, `purpose`) plus the remaining common attributes (`subject`, `scope`, `context_reference`, `source_cue`) — it does *not* carry `description` or `significance`.
+- **Chunk-level** (`chunk_summary`, `chunk_topic`, `pavement_engineering_term`): `{artifact_id, text, char_interval, attributes}`. No `description` / `significance` at top level. `attributes` carries the type-specific keys (`summary` / `document_function` / `scope` for `chunk_summary`; `topic` / `topic_role` for `chunk_topic`; `term` / `normalized_term` / `term_category` for `pavement_engineering_term`).
 
-This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) per-extraction shape (`{artifact_id, text, description, significance, char_interval, attributes}`) versus the bundled flow's `text`/`description`/`importance`. The bundled flow's `-artifacts.json` is intentionally not retrofitted (would invalidate existing caches). Note: this is also a v1→v2 break inside the standalone flow itself — v1 carried `description`/`significance` inside `attributes`. Operators with cached v1 `-logic-artifacts.json` files should re-run with `--overwrite` to regenerate under v2.
+`artifact_id`'s `idx` counter is **continuous across both calls within a chunk** — span-level extractions take the lower indices, chunk-level the higher. `char_interval` is preserved verbatim from `langextract`. Failed chunks emit `"extractions": {}` with an `"error"` field instead of aborting the doc; one error covers both calls.
+
+This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) per-extraction shape varies by class group versus the bundled flow's flat `text`/`description`/`importance`. The bundled flow's `-artifacts.json` is intentionally not retrofitted. Inside the standalone flow this is also a v1→v2→v3 progression: v1 had `description`/`significance` inside `attributes`; v2 promoted them to top level on every entry; v3 keeps them at top level for span-level entries but omits them entirely for chunk-level entries. Operators with cached v1 / v2 `-logic-artifacts.json` files should re-run with `--overwrite`.
 
 ### Configuration
 
@@ -197,9 +257,11 @@ input_dir = "./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
 [langextract]
 model = "gpt-4o-mini"
 temperature = 0.0
-extraction_passes = 2                     # langextract recall knob; higher = more cost
-max_char_buffer = 10000                   # disables internal sub-chunking for short logical chunks
-prompt_name = "nemo_logic-artifacts-02"
+extraction_passes = 2                          # span-level recall passes
+chunk_extraction_passes = 1                    # chunk-level passes (deterministic)
+max_char_buffer = 10000                        # disables internal sub-chunking for short logical chunks
+prompt_name_span = "nemo_logic-artifacts-03-span"
+prompt_name_chunk = "nemo_logic-artifacts-03-chunk"
 prompt_lib = "./prompts"
 # api_key resolved from .env::OPENAI_API_KEY at runtime if absent here
 ```
@@ -221,7 +283,7 @@ The script skip-writes a doc when `{doc_id}-logic-artifacts.json` exists and `--
 
 ### Cost note
 
-`langextract` does not surface OpenAI usage uniformly through its API, so cost is currently **uninstrumented**. With `extraction_passes=2`, expect ~2× the per-chunk cost of a single pass. A tiktoken-based post-hoc estimator is a planned follow-up.
+`langextract` does not surface OpenAI usage uniformly through its API, so cost is currently **uninstrumented**. With `extraction_passes=2` and `chunk_extraction_passes=1`, the script makes **3 model calls per chunk** (2 span + 1 chunk) — roughly 1.5× the v2 per-chunk cost. At gpt-4o-mini input prices, ~$0.0024/chunk. A tiktoken-based post-hoc estimator is a planned follow-up.
 
 ---
 
