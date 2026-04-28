@@ -110,20 +110,37 @@ Standalone script that reads each `{doc_id}-logic-chunks.json`, sends every logi
 .venv/bin/python extract_artifacts.py --cfg cfg/nemo.toml
 ```
 
-### Extraction-class vocabulary (8 classes, frozen)
+### Extraction-class vocabulary (21 classes, frozen)
+
+Normative/functional taxonomy: the classes describe what the text *does* (imposes a rule, states a condition, reports a finding) rather than the domain entity it names.
 
 | Class | What it captures |
 |---|---|
-| `material` | binders, mixes, concretes, aggregates, additives, admixtures, geosynthetics, coatings |
-| `distress` | cracking, rutting, raveling, polishing, faulting, joint deterioration, with severity quantifiers |
-| `treatment` | overlays, mill-and-fill, micro-surfacing, chip seals, whitetopping, full-depth reclamation, joint repair |
-| `specification` | quantitative requirements: thicknesses, gradations, percentages, ranges, tolerances |
-| `test_method` | FWD, IRI measurement, Marshall stability, gyratory compaction, profilometry |
-| `metric` | IRI, ESALs, PCI, structural number, modulus, traffic loadings |
-| `process` | LCCA, scoping field view, design analysis, project programming |
-| `reference` | publications, chapters, sections, tables, figures, appendices, standards (also populates `attributes.title`/`source`/`context`) |
+| `requirement` | mandatory or prohibited action — `shall`, `must`, `required`, `prohibited`, or equivalent language |
+| `condition` | if/when clause that controls applicability, eligibility, or triggering of another artifact |
+| `exception` | case where a normal rule does not apply, or where approval/waiver/special circumstance changes the rule |
+| `constraint` | limitation, boundary, restriction, or scope limit |
+| `procedure` | ordered steps or workflow for completing a task |
+| `method` | analytical, design, testing, calculation, or evaluation approach |
+| `formula` | mathematical expression or calculation rule |
+| `parameter` | named variable, coefficient, input, output, design value, or material property |
+| `threshold` | numeric or categorical boundary used for classification, selection, or decision-making |
+| `definition` | explanation of the meaning of a term |
+| `actor_role` | person, office, organization, or role responsible for action, review, approval, or consultation |
+| `deliverable` | report, form, drawing, submission, record, package, analysis, or other output |
+| `assumption` | design premise or condition accepted as true for analysis |
+| `finding` | stated observation, result, diagnosis, or conclusion |
+| `recommendation` | suggested or preferred action that is not strictly mandatory |
+| `best_practice` | preferred, accepted, or commonly recommended practice for design/construction/testing/evaluation/documentation/maintenance |
+| `decision` | selected option, approval, rejection, determination, or adopted conclusion |
+| `rationale` | explanation of why a requirement, recommendation, decision, finding, or method exists |
+| `issue` | identified problem, deficiency, conflict, or gap |
+| `risk` | possible adverse outcome, uncertainty, or failure mode |
+| `evidence` | data, observation, test result, measurement, or cited basis supporting a finding/decision/rationale/requirement |
 
 Out-of-vocabulary classes returned by the model are dropped with an `"NLP"` log line so prompt drift is observable. The class list lives in `extract_artifacts.py::EXTRACTION_CLASSES`.
+
+Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title`, `page_number`, `header`, `footer`, `table_of_contents_entry`, `caption_alone`, `revision_date`, `document_title`) appear only inside `attributes.context_reference` (or `attributes.source_reference`) of a meaningful artifact, never as standalone extractions.
 
 ### Output schema
 
@@ -137,16 +154,23 @@ Out-of-vocabulary classes returned by the model are dropped with an `"NLP"` log 
       "chunk_id": 0,
       "tokens": 457,
       "extractions": {
-        "material": [
+        "requirement": [
           {
             "artifact_id": "TBF000027_UKN000_chunk_0_art_0",
-            "text": "Type II portland cement mix",
-            "char_interval": {"start_pos": 145, "end_pos": 172},
-            "attributes": {"description": "concrete mix used in the whitetopping overlay"}
+            "text": "separate pavement design analyses shall be prepared",
+            "description": "requirement to prepare separate pavement design analyses",
+            "significance": null,
+            "char_interval": {"start_pos": 145, "end_pos": 197},
+            "attributes": {
+              "modality": "shall",
+              "required_action": "prepared",
+              "target": "separate pavement design analyses",
+              "source_cue": "shall"
+            }
           }
         ],
-        "specification": [...],
-        "reference": [...]
+        "condition": [...],
+        "best_practice": [...]
       }
     },
     {
@@ -159,9 +183,9 @@ Out-of-vocabulary classes returned by the model are dropped with an `"NLP"` log 
 }
 ```
 
-`extractions` keys are a subset of the 8-class vocabulary (omitted when empty). `char_interval` is preserved verbatim from `langextract` and lets downstream steps surface evidence offsets in QA pairs. Failed chunks emit `"extractions": {}` with an `"error"` field instead of aborting the doc.
+`extractions` keys are a subset of the 21-class vocabulary (omitted when empty). Per-extraction keys are `{artifact_id, text, description, significance, char_interval, attributes}`: `description` is always a string (defaults to `""` if the model omits it); `significance` is either `null` or a non-empty string (the prompt instructs the model to populate it only when the source text states or directly supports the artifact's purpose, effect, consequence, or importance); `attributes` carries only type-specific keys (e.g. `modality`, `symbol`, `purpose`) plus the remaining common attributes (`subject`, `scope`, `context_reference`, `source_cue`) — it does *not* carry `description` or `significance`. `char_interval` is preserved verbatim from `langextract` and lets downstream steps surface evidence offsets in QA pairs. Failed chunks emit `"extractions": {}` with an `"error"` field instead of aborting the doc.
 
-This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) per-extraction keys are `artifact_id`/`text`/`char_interval`/`attributes` instead of `text`/`description`/`importance` — `attributes.description` carries what `description` did before. The bundled flow's `-artifacts.json` is intentionally not retrofitted (would invalidate existing caches).
+This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) per-extraction shape (`{artifact_id, text, description, significance, char_interval, attributes}`) versus the bundled flow's `text`/`description`/`importance`. The bundled flow's `-artifacts.json` is intentionally not retrofitted (would invalidate existing caches). Note: this is also a v1→v2 break inside the standalone flow itself — v1 carried `description`/`significance` inside `attributes`. Operators with cached v1 `-logic-artifacts.json` files should re-run with `--overwrite` to regenerate under v2.
 
 ### Configuration
 
@@ -173,9 +197,9 @@ input_dir = "./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
 [langextract]
 model = "gpt-4o-mini"
 temperature = 0.0
-extraction_passes = 3                     # langextract recall knob; higher = more cost
+extraction_passes = 2                     # langextract recall knob; higher = more cost
 max_char_buffer = 10000                   # disables internal sub-chunking for short logical chunks
-prompt_name = "nemo_logic-artifacts"
+prompt_name = "nemo_logic-artifacts-02"
 prompt_lib = "./prompts"
 # api_key resolved from .env::OPENAI_API_KEY at runtime if absent here
 ```
@@ -197,7 +221,7 @@ The script skip-writes a doc when `{doc_id}-logic-artifacts.json` exists and `--
 
 ### Cost note
 
-`langextract` does not surface OpenAI usage uniformly through its API, so cost is currently **uninstrumented**. With `extraction_passes=3`, expect ~3× the per-chunk cost of a single pass. A tiktoken-based post-hoc estimator is a planned follow-up.
+`langextract` does not surface OpenAI usage uniformly through its API, so cost is currently **uninstrumented**. With `extraction_passes=2`, expect ~2× the per-chunk cost of a single pass. A tiktoken-based post-hoc estimator is a planned follow-up.
 
 ---
 

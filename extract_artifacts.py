@@ -36,106 +36,122 @@ for _name, _no, _icon in (("CHUNK", 14, "📦"), ("NLP", 10, "🧠")):
 
 
 EXTRACTION_CLASSES: list[str] = [
-    "material",
-    "distress",
-    "treatment",
-    "specification",
-    "test_method",
-    "metric",
-    "process",
-    "reference",
+    "requirement",
+    "condition",
+    "exception",
+    "constraint",
+    "procedure",
+    "method",
+    "formula",
+    "parameter",
+    "threshold",
+    "definition",
+    "actor_role",
+    "deliverable",
+    "assumption",
+    "finding",
+    "recommendation",
+    "best_practice",
+    "decision",
+    "rationale",
+    "issue",
+    "risk",
+    "evidence",
 ]
 
 
 PAVEMENT_EXAMPLES: list[lx.data.ExampleData] = [
     lx.data.ExampleData(
         text=(
-            "This study evaluated the long-term performance of an ultrathin whitetopping overlay "
-            "placed on a deteriorated brick street in Oskaloosa, Iowa. The overlay used a Type II "
-            "portland cement mix designed for a 28-day compressive strength of 4,500 psi. Pre-overlay "
-            "condition surveys documented transverse cracking and rutting greater than 0.5 in along "
-            "the wheel paths. Construction included a mill-and-fill of distressed asphalt patches "
-            "before the overlay was placed. Performance was monitored via Falling Weight Deflectometer "
-            "(FWD) testing and International Roughness Index (IRI) measurements. After 5 years of "
-            "service under 1.2 million ESALs, IRI had increased from 95 in/mi to 142 in/mi. A Life "
-            "Cycle Cost Analysis (LCCA) following the procedure in Chapter 3 of Publication 242 "
-            "indicated whitetopping was the most cost-effective option over a 20-year horizon. "
-            "Construction specifications are detailed in Publication 408, Section 501."
+            "If the projected 18-kip ESALs vary substantially between adjacent "
+            "construction sections, separate pavement design analyses shall be "
+            "prepared. The designer shall submit the pavement design analysis "
+            "to the District for approval. Good pavement design practice is to "
+            "provide adequate drainage to prevent water from being trapped within "
+            "the pavement structure, which can reduce pavement performance."
         ),
         extractions=[
             lx.data.Extraction(
-                extraction_class="treatment",
-                extraction_text="ultrathin whitetopping overlay",
-                attributes={"description": "rehabilitation treatment evaluated for use on a deteriorated brick street"},
-            ),
-            lx.data.Extraction(
-                extraction_class="material",
-                extraction_text="Type II portland cement mix",
-                attributes={"description": "concrete mix used in the whitetopping overlay"},
-            ),
-            lx.data.Extraction(
-                extraction_class="specification",
-                extraction_text="28-day compressive strength of 4,500 psi",
-                attributes={"description": "design strength specification for the overlay concrete mix"},
-            ),
-            lx.data.Extraction(
-                extraction_class="distress",
-                extraction_text="transverse cracking",
-                attributes={"description": "pre-overlay distress recorded during condition surveys"},
-            ),
-            lx.data.Extraction(
-                extraction_class="distress",
-                extraction_text="rutting greater than 0.5 in along the wheel paths",
-                attributes={"description": "pre-overlay rutting severity along wheel paths"},
-            ),
-            lx.data.Extraction(
-                extraction_class="treatment",
-                extraction_text="mill-and-fill",
-                attributes={"description": "preparatory treatment applied to distressed asphalt patches before placing the overlay"},
-            ),
-            lx.data.Extraction(
-                extraction_class="test_method",
-                extraction_text="Falling Weight Deflectometer (FWD) testing",
-                attributes={"description": "structural performance monitoring method used during the evaluation"},
-            ),
-            lx.data.Extraction(
-                extraction_class="test_method",
-                extraction_text="International Roughness Index (IRI) measurements",
-                attributes={"description": "surface roughness monitoring method used during the evaluation"},
-            ),
-            lx.data.Extraction(
-                extraction_class="metric",
-                extraction_text="1.2 million ESALs",
-                attributes={"description": "cumulative traffic loading over the 5-year monitoring period"},
-            ),
-            lx.data.Extraction(
-                extraction_class="metric",
-                extraction_text="IRI had increased from 95 in/mi to 142 in/mi",
-                attributes={"description": "observed surface roughness degradation over 5 years of service"},
-            ),
-            lx.data.Extraction(
-                extraction_class="process",
-                extraction_text="Life Cycle Cost Analysis (LCCA)",
-                attributes={"description": "decision framework used to compare treatment alternatives over a 20-year horizon"},
-            ),
-            lx.data.Extraction(
-                extraction_class="reference",
-                extraction_text="Chapter 3 of Publication 242",
+                extraction_class="condition",
+                extraction_text=(
+                    "If the projected 18-kip ESALs vary substantially between "
+                    "adjacent construction sections"
+                ),
                 attributes={
-                    "description": "LCCA procedure reference",
-                    "title": "Publication 242, Pavement Design Manual, Chapter 3",
-                    "source": "Publication 242, Pavement Design Manual",
-                    "context": "Chapter 3 specifies the LCCA procedure followed in this study to compare treatment alternatives",
+                    "trigger": "projected 18-kip ESALs vary substantially",
+                    "applies_to": "adjacent construction sections",
+                    "source_cue": "If",
+                    "description": "condition under which separate design analyses are needed",
                 },
             ),
             lx.data.Extraction(
-                extraction_class="reference",
-                extraction_text="Publication 408, Section 501",
+                extraction_class="requirement",
+                extraction_text="separate pavement design analyses shall be prepared",
                 attributes={
-                    "description": "construction specifications reference for the whitetopping overlay",
-                    "title": "Publication 408, Specifications, Section 501",
-                    "source": "Publication 408, Specifications",
-                    "context": "Section 501 of Publication 408 provides the construction specifications for whitetopping referenced by this study",
+                    "modality": "shall",
+                    "required_action": "prepared",
+                    "target": "separate pavement design analyses",
+                    "condition": (
+                        "projected 18-kip ESALs vary substantially between "
+                        "adjacent construction sections"
+                    ),
+                    "source_cue": "shall",
+                    "description": "requirement to prepare separate pavement design analyses",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="actor_role",
+                extraction_text="The designer",
+                attributes={
+                    "role": "designer",
+                    "responsibility": "submit the pavement design analysis",
+                    "description": "party responsible for submitting the pavement design analysis",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="requirement",
+                extraction_text=(
+                    "The designer shall submit the pavement design analysis "
+                    "to the District for approval"
+                ),
+                attributes={
+                    "modality": "shall",
+                    "actor": "designer",
+                    "required_action": "submit",
+                    "target": "pavement design analysis",
+                    "recipient": "District",
+                    "purpose": "approval",
+                    "source_cue": "shall",
+                    "description": "requirement for the designer to submit the design analysis for District approval",
+                    "significance": "submission to the District is required for design approval",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="deliverable",
+                extraction_text="pavement design analysis",
+                attributes={
+                    "name": "pavement design analysis",
+                    "deliverable_type": "analysis",
+                    "recipient": "District",
+                    "purpose": "approval",
+                    "description": "analysis submitted for pavement design approval",
+                    "significance": "submitted to the District for approval",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="best_practice",
+                extraction_text=(
+                    "Good pavement design practice is to provide adequate drainage "
+                    "to prevent water from being trapped within the pavement structure"
+                ),
+                attributes={
+                    "practice": "provide adequate drainage",
+                    "target": "pavement structure",
+                    "purpose": "prevent water from being trapped",
+                    "basis": "good pavement design practice",
+                    "source_cue": "Good pavement design practice",
+                    "description": "preferred drainage practice for pavement design",
+                    "significance": "trapped water can reduce pavement performance",
                 },
             ),
         ],
@@ -148,9 +164,9 @@ class LXConfig:
     model: str = "gpt-4o-mini"
     api_key: str | None = None
     temperature: float = 0.0
-    extraction_passes: int = 3
+    extraction_passes: int = 2
     max_char_buffer: int = 10000
-    prompt_name: str = "nemo_logic-artifacts"
+    prompt_name: str = "nemo_logic-artifacts-02"
     prompt_lib: str = "./prompts"
 
 
@@ -196,11 +212,16 @@ class PavementExtractor:
                 if ci is not None
                 else None
             )
+            attrs: dict = dict(ext.attributes or {})
+            description: str = attrs.pop("description", "") or ""
+            significance: str | None = attrs.pop("significance", None) or None
             entry: dict = {
                 "artifact_id": f"{doc_id}_chunk_{chunk_id}_art_{ext_idx}",
                 "text": ext.extraction_text,
+                "description": description,
+                "significance": significance,
                 "char_interval": char_iv,
-                "attributes": dict(ext.attributes or {}),
+                "attributes": attrs,
             }
             bucketed.setdefault(cls, []).append(entry)
             ext_idx += 1
