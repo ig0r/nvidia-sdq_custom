@@ -156,6 +156,324 @@ PAVEMENT_EXAMPLES: list[lx.data.ExampleData] = [
             ),
         ],
     ),
+    # Example 2 — manual/specification style (RCA mix design).
+    # Demonstrates type-specific attribute keys for: definition, method, formula,
+    # parameter, threshold, exception, constraint, procedure, assumption, rationale.
+    lx.data.ExampleData(
+        text=(
+            "Recycled concrete aggregate, abbreviated RCA, is aggregate produced by "
+            "crushing reclaimed hydraulic-cement concrete. The volumetric method "
+            "displaces a known volume of water from a calibrated bowl to measure the "
+            "entrained air content of fresh RCA concrete. The water-to-cementitious-"
+            "materials ratio is computed as w/cm = m_w / m_cm, where m_w is the mass "
+            "of mixing water and m_cm is the mass of all cementitious materials. The "
+            "coarse RCA replacement level governs both fresh and hardened mixture "
+            "properties and is expressed as a percentage on a volume basis. Coarse "
+            "RCA replacement greater than 50 percent triggers a strength verification "
+            "test prior to placement. RCA concrete is permitted in this specification "
+            "except for projects where the source concrete is known to be affected by "
+            "alkali-silica reaction. Use of RCA is limited to mixtures with a w/cm at "
+            "or below 0.45. To proportion a trial RCA concrete mixture, the designer "
+            "shall first batch a one-cubic-yard trial; then measure slump, air content, "
+            "and unit weight; finally adjust the paste content and retest if any "
+            "property falls outside the target range. For mechanistic-empirical rigid "
+            "pavement design, the analysis assumes a representative 28-day flexural "
+            "strength of 600 psi unless project-specific testing supports a different "
+            "value, because trial batching is generally not available before the design "
+            "phase."
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="definition",
+                extraction_text=(
+                    "Recycled concrete aggregate, abbreviated RCA, is aggregate produced by "
+                    "crushing reclaimed hydraulic-cement concrete"
+                ),
+                attributes={
+                    "term": "Recycled concrete aggregate (RCA)",
+                    "definition": "aggregate produced by crushing reclaimed hydraulic-cement concrete",
+                    "description": "definition of recycled concrete aggregate (RCA)",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="method",
+                extraction_text=(
+                    "The volumetric method displaces a known volume of water from a "
+                    "calibrated bowl to measure the entrained air content of fresh RCA concrete"
+                ),
+                attributes={
+                    "method_name": "volumetric method",
+                    "purpose": "measure entrained air content of fresh RCA concrete",
+                    "context": "testing",
+                    "input": "known volume of water in a calibrated bowl",
+                    "output": "entrained air content",
+                    "description": "test method for measuring air content via water displacement",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="formula",
+                extraction_text="w/cm = m_w / m_cm",
+                attributes={
+                    "expression": "w/cm = m_w / m_cm",
+                    "computes": "water-to-cementitious-materials ratio",
+                    "variables": "m_w (mass of mixing water), m_cm (mass of cementitious materials)",
+                    "description": "formula for the water-to-cementitious-materials ratio",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="parameter",
+                extraction_text=(
+                    "The coarse RCA replacement level governs both fresh and hardened "
+                    "mixture properties and is expressed as a percentage on a volume basis"
+                ),
+                attributes={
+                    "name": "coarse RCA replacement level",
+                    "unit": "percent (volume basis)",
+                    "role": "design value",
+                    "applies_to": "RCA concrete mix proportioning",
+                    "description": "design parameter governing fresh and hardened RCA mixture properties",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="threshold",
+                extraction_text=(
+                    "Coarse RCA replacement greater than 50 percent triggers a strength "
+                    "verification test prior to placement"
+                ),
+                attributes={
+                    "value": "50",
+                    "unit": "percent",
+                    "comparison": "greater than",
+                    "applies_to": "coarse RCA replacement level",
+                    "decision_effect": "triggers a strength verification test prior to placement",
+                    "description": "boundary above which coarse RCA replacement requires strength verification",
+                    "significance": "strength verification is required when coarse RCA replacement exceeds 50 percent",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="exception",
+                extraction_text=(
+                    "RCA concrete is permitted in this specification except for projects "
+                    "where the source concrete is known to be affected by alkali-silica reaction"
+                ),
+                attributes={
+                    "normal_rule": "RCA concrete is permitted in this specification",
+                    "exception_case": "projects where the source concrete is known to be affected by alkali-silica reaction",
+                    "approval_required": "unspecified",
+                    "source_cue": "except for",
+                    "description": "exception barring RCA concrete when the source concrete is ASR-affected",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="constraint",
+                extraction_text="Use of RCA is limited to mixtures with a w/cm at or below 0.45",
+                attributes={
+                    "limitation": "w/cm at or below 0.45",
+                    "applies_to": "mixtures containing RCA",
+                    "scope": "all RCA concrete mixtures under this specification",
+                    "source_cue": "limited to",
+                    "description": "upper-bound constraint on the water-to-cementitious-materials ratio for RCA mixtures",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="procedure",
+                extraction_text=(
+                    "To proportion a trial RCA concrete mixture, the designer shall first "
+                    "batch a one-cubic-yard trial; then measure slump, air content, and unit "
+                    "weight; finally adjust the paste content and retest if any property "
+                    "falls outside the target range"
+                ),
+                attributes={
+                    "procedure_name": "proportioning a trial RCA concrete mixture",
+                    "step": "batch one-cubic-yard trial; measure slump, air content, and unit weight; adjust paste content and retest if any property is out of range",
+                    "sequence_indicator": "first / then / finally",
+                    "input": "initial mix proportions",
+                    "output": "adjusted trial mix proportions",
+                    "actor": "designer",
+                    "description": "stepwise procedure for proportioning a trial RCA concrete mixture",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="assumption",
+                extraction_text=(
+                    "the analysis assumes a representative 28-day flexural strength of 600 "
+                    "psi unless project-specific testing supports a different value"
+                ),
+                attributes={
+                    "assumption": "representative 28-day flexural strength of 600 psi",
+                    "assumed_value": "600 psi",
+                    "scope": "mechanistic-empirical rigid pavement design",
+                    "basis": "default value used unless project-specific testing supports a different value",
+                    "description": "default 28-day flexural strength assumption for ME pavement design with RCA concrete",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="rationale",
+                extraction_text=(
+                    "because trial batching is generally not available before the design phase"
+                ),
+                attributes={
+                    "explains": "use of an assumed flexural strength rather than a measured value",
+                    "reason": "trial batching is generally not available before the design phase",
+                    "source_cue": "because",
+                    "description": "rationale for using a default flexural strength rather than a measured value",
+                },
+            ),
+        ],
+    ),
+    # Example 3 — report/research style (RCA strength + brick-street rehabilitation).
+    # Demonstrates type-specific attribute keys for: evidence, finding, issue,
+    # rationale, decision, recommendation, risk.
+    lx.data.ExampleData(
+        text=(
+            "A statistical study using data from more than 100 peer-reviewed studies "
+            "indicated that RCA concrete typically exhibits a 10 to 15 percent reduction "
+            "in compressive strength compared with companion conventional concrete "
+            "mixtures. Transverse cracking is the dominant distress observed in the "
+            "existing pavement section. This cracking results from the brittleness of "
+            "the brick base combined with the flexibility of the asphalt overlay. The "
+            "investigation team selected the ultrathin whitetopping option over the "
+            "asphaltic concrete overlay alternative because the whitetopping demonstrated "
+            "better long-term performance in similar climates. Field deflection testing "
+            "using the falling weight deflectometer recorded deflections under 8 mils "
+            "across all test locations on the Oskaloosa project. Practitioners should "
+            "monitor stockpile moisture content closely, since sudden drops in moisture "
+            "have been linked to rapid workability loss during paving. Use of high-"
+            "replacement fine RCA in interstate shoulders introduces an elevated risk of "
+            "premature surface scaling under freeze-thaw exposure. Engineers should "
+            "consider blending RCA with virgin aggregate when the source concrete is "
+            "variable, because blending reduces the proportion of adhered mortar and "
+            "stabilizes the strength of the resulting mixture."
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="evidence",
+                extraction_text="A statistical study using data from more than 100 peer-reviewed studies",
+                attributes={
+                    "evidence_type": "data",
+                    "evidence_value": "more than 100 peer-reviewed studies",
+                    "supports": "finding on RCA compressive strength reduction",
+                    "description": "statistical evidence base for findings on RCA concrete strength",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="finding",
+                extraction_text=(
+                    "RCA concrete typically exhibits a 10 to 15 percent reduction in "
+                    "compressive strength compared with companion conventional concrete mixtures"
+                ),
+                attributes={
+                    "finding_subject": "compressive strength of RCA concrete",
+                    "finding_value": "10 to 15 percent reduction compared with companion conventional concrete mixtures",
+                    "basis": "statistical study of more than 100 peer-reviewed studies",
+                    "severity": "moderate",
+                    "description": "observed reduction in RCA concrete compressive strength relative to conventional mixtures",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="issue",
+                extraction_text=(
+                    "Transverse cracking is the dominant distress observed in the existing pavement section"
+                ),
+                attributes={
+                    "problem": "transverse cracking",
+                    "problem_type": "design",
+                    "affected_item": "existing pavement section",
+                    "severity": "high",
+                    "description": "transverse cracking identified as the dominant distress in the existing pavement",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="rationale",
+                extraction_text=(
+                    "This cracking results from the brittleness of the brick base combined "
+                    "with the flexibility of the asphalt overlay"
+                ),
+                attributes={
+                    "explains": "presence of transverse cracking in the existing pavement",
+                    "reason": "brittleness of the brick base combined with the flexibility of the asphalt overlay",
+                    "source_cue": "results from",
+                    "description": "explanation linking transverse cracking to the brittle/flexible base-overlay mismatch",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="decision",
+                extraction_text=(
+                    "The investigation team selected the ultrathin whitetopping option over "
+                    "the asphaltic concrete overlay alternative"
+                ),
+                attributes={
+                    "decision_subject": "rehabilitation alternative for the brick street",
+                    "selected_option": "ultrathin whitetopping",
+                    "rejected_option": "asphaltic concrete overlay",
+                    "authority": "investigation team",
+                    "basis": "whitetopping demonstrated better long-term performance in similar climates",
+                    "source_cue": "selected",
+                    "description": "selection of ultrathin whitetopping over asphaltic concrete overlay",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="finding",
+                extraction_text=(
+                    "Field deflection testing using the falling weight deflectometer recorded "
+                    "deflections under 8 mils across all test locations on the Oskaloosa project"
+                ),
+                attributes={
+                    "finding_subject": "pavement deflections at FWD test locations",
+                    "finding_value": "deflections under 8 mils across all test locations on the Oskaloosa project",
+                    "basis": "field falling weight deflectometer testing",
+                    "severity": "unspecified",
+                    "description": "in-field deflection finding at the Oskaloosa project test locations",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="recommendation",
+                extraction_text="Practitioners should monitor stockpile moisture content closely",
+                attributes={
+                    "recommended_action": "monitor stockpile moisture content closely",
+                    "target": "RCA stockpile",
+                    "strength": "should",
+                    "rationale": "sudden drops in moisture have been linked to rapid workability loss during paving",
+                    "source_cue": "should",
+                    "description": "recommendation to closely monitor RCA stockpile moisture content",
+                    "significance": "rapid workability loss during paving has been linked to sudden drops in stockpile moisture",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="risk",
+                extraction_text=(
+                    "Use of high-replacement fine RCA in interstate shoulders introduces an "
+                    "elevated risk of premature surface scaling under freeze-thaw exposure"
+                ),
+                attributes={
+                    "risk_event": "premature surface scaling",
+                    "consequence": "reduced surface durability",
+                    "affected_item": "interstate shoulders using high-replacement fine RCA",
+                    "likelihood": "elevated",
+                    "severity": "moderate",
+                    "description": "elevated scaling risk for interstate shoulders using high-replacement fine RCA",
+                    "significance": "scaling can occur under freeze-thaw exposure",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="recommendation",
+                extraction_text=(
+                    "Engineers should consider blending RCA with virgin aggregate when the "
+                    "source concrete is variable"
+                ),
+                attributes={
+                    "recommended_action": "blending RCA with virgin aggregate",
+                    "target": "RCA concrete mixture",
+                    "condition": "source concrete is variable",
+                    "strength": "should consider",
+                    "rationale": "blending reduces the proportion of adhered mortar and stabilizes mixture strength",
+                    "source_cue": "should consider",
+                    "description": "recommendation to blend RCA with virgin aggregate when source variability is present",
+                    "significance": "blending reduces adhered mortar and stabilizes the strength of the resulting mixture",
+                },
+            ),
+        ],
+    ),
 ]
 
 
