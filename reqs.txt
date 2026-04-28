@@ -2,7 +2,7 @@ pandas==2.3.0
 pydantic==2.11.7
 ollama==0.5.1
 openai==1.91.0
-google-genai==1.21.1
+google-genai==1.73.1
 python-dotenv==1.1.0
 langchain==0.3.26
 langchain-google-genai==2.1.5
@@ -31,3 +31,4 @@ python-louvain==0.16
 faiss-cpu==1.11.0.post1
 datasets==4.5.0
 hf_xet==1.2.0
+langextract==1.2.1

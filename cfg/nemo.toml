@@ -70,6 +70,16 @@ logical_stride = 30            # slide amount (logical only, <= logical_window)
 hybrid_window = 8              # recursive pieces per LLM call (random_logical only); hybrid_window × chunk_size <= [llm].max_input_tokens
 hybrid_stride = 6              # slide amount (random_logical only, <= hybrid_window)
 
+# LANGEXTRACT (Step 2 of mode-3 logical flow; consumed only by extract_artifacts.py)
+[langextract]
+model = "gpt-4o-mini"
+temperature = 0.0
+extraction_passes = 3            # langextract recall knob; each pass costs ~1× extraction
+max_char_buffer = 10000          # disable internal langextract sub-chunking for our short logical chunks
+prompt_name = "nemo_logic-artifacts"
+prompt_lib = "./prompts"
+# api_key resolved from .env::OPENAI_API_KEY at runtime if absent here
+
 # ANALYSIS SETTINGS
 [jsa]
 accidents_file = "./rawdata/sir.csv" # imis or sir

@@ -1,0 +1,65 @@
+Extract question-generating semantic artifacts from pavement engineering text.
+
+An artifact is a source-grounded text span that can support a meaningful question and answer.
+
+Use exact source text for each extraction. Do not paraphrase the extraction_text.
+
+Do not extract metadata, section titles, page numbers, document titles, revision dates, headers, footers, table numbers, figure numbers, or standalone references.
+
+Allowed extraction classes:
+
+- requirement: mandatory or prohibited action, usually expressed by shall, must, required, prohibited, or equivalent language.
+
+- condition: if/when clause that controls applicability, eligibility, or triggering of another artifact.
+
+- exception: case where a normal rule does not apply, or where approval/waiver changes the rule.
+
+- constraint: limitation, boundary, restriction, or scope limit.
+
+- procedure: ordered steps or workflow for completing a task.
+
+- method: analytical, design, testing, calculation, or evaluation approach.
+
+- formula: mathematical expression or calculation rule.
+
+- parameter: named variable, coefficient, input, output, design value, or material property.
+
+- threshold: numeric or categorical boundary used for classification, selection, or decision-making.
+
+- definition: explanation of the meaning of a term.
+
+- actor_role: person, office, organization, or role responsible for action, review, approval, or consultation.
+
+- deliverable: report, form, drawing, submission, record, package, or other output.
+
+- assumption: design premise or condition accepted as true for analysis.
+
+- finding: stated observation, result, diagnosis, or conclusion.
+
+- recommendation: suggested or preferred action that is not strictly mandatory.
+
+- decision: selected option, approval, rejection, determination, or adopted conclusion.
+
+- rationale: explanation of why a requirement, recommendation, decision, or method is used.
+
+- issue: identified problem, deficiency, conflict, or gap.
+
+- risk: possible adverse outcome, uncertainty, or failure mode.
+
+- evidence: data, observation, test result, measurement, or cited basis supporting a finding, decision, or rationale.
+
+Rules:
+
+1. Extract only spans that can support non-trivial question generation.
+
+2. Prefer complete clauses or sentences over isolated words.
+
+3. Do not extract table, figure, or reference as artifact classes.
+
+4. If a table, figure, section, form, or standard is mentioned, keep it only as an attribute when it helps interpret the artifact.
+
+5. Do not create duplicate overlapping extractions unless the same span clearly serves different question-generation roles.
+
+6. Preserve order of appearance.
+
+7. Add concise attributes that help question generation, such as modality, actor, target, condition, value, unit, question_type, and source_cue.

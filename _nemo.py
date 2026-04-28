@@ -436,10 +436,10 @@ class QAGenerator:
 
     async def run_sgd_logical_pipeline(self):
         method: str = self.chunk_cfg.get("method")
-        allowed: set[str] = {"logical", "random_logical"}
-        if method not in allowed:
+        if method != "random_logical":
             raise ValueError(
-                f"--sdg-logical requires [chunking].method in {sorted(allowed)}; got {method!r}"
+                f"--sdg-logical requires [chunking].method == 'random_logical'; got {method!r}. "
+                f"For mode 'logical', use --sdg instead."
             )
 
         md_files: list[Path] = sorted(Path(self.input_dir).glob("*.md"))
