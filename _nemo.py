@@ -601,11 +601,20 @@ class QAGenerator:
             cached = files.read_json(out_path)
             return cached.get("contexts", []) if isinstance(cached, dict) else cached
 
+        def _ctx_chunk(chunk: dict) -> dict:
+            out: dict = {}
+            for k, v in chunk.items():
+                if k == "source_u_chunk_ids":
+                    out["source_u_logic_chunk_ids"] = [chunk.get("u_logic_chunk_id")]
+                out[k] = v
+            if "source_u_logic_chunk_ids" not in out:
+                out["source_u_logic_chunk_ids"] = [chunk.get("u_logic_chunk_id")]
+            return out
+
         ctx: dictlist = [
             {
                 "u_ctx_id": f"{doc_id}-ctx-{idx}",
-                "source_u_logic_chunk_ids": [chunk.get("u_logic_chunk_id")],
-                "chunks": [chunk],
+                "chunks": [_ctx_chunk(chunk)],
                 "tokens": chunk.get("tokens", 0),
             }
             for idx, chunk in enumerate(chunks)
