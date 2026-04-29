@@ -844,7 +844,17 @@ def main():
     else:
         logger.info("PHASE 2 skipped (extract_citations=false)")
 
-    # ---- FINAL: renumber + save ----
+    # ---- FINAL: sort to source order, renumber, save ----
+    def _natural_key(s: str) -> tuple:
+        # split on digit runs so "ctx-2" sorts before "ctx-10"
+        import re
+        return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", s or ""))
+
+    all_questions.sort(key=lambda q: (
+        _natural_key(q.get("doc_id", "")),
+        _natural_key(q.get("u_ctx_id", "")),
+        _natural_key(q.get("artifact_id", "")),
+    ))
     counters: dict[str, int] = {}
     for q in all_questions:
         ctx_id = q.get("u_ctx_id", "unknown")
