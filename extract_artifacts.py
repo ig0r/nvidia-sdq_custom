@@ -663,7 +663,9 @@ class PavementExtractor:
             else None
         )
 
-    def _extract_spans(self, text: str, doc_id: str, chunk_id: int) -> dict[str, list[dict]]:
+    def _extract_spans(
+        self, text: str, doc_id: str, chunk_id: int, u_ctx_id: str
+    ) -> dict[str, list[dict]]:
         result = lx.extract(
             text_or_documents=text,
             prompt_description=self.prompt_span,
@@ -690,6 +692,7 @@ class PavementExtractor:
             significance: str | None = attrs.pop("significance", None) or None
             entry: dict = {
                 "artifact_id": f"{doc_id}_chunk_{chunk_id}_art_{ext_idx}",
+                "u_artifact_id": f"{u_ctx_id}-art-{ext_idx}",
                 "text": ext.extraction_text,
                 "description": description,
                 "significance": significance,
@@ -700,7 +703,7 @@ class PavementExtractor:
             ext_idx += 1
         return bucketed
 
-    def extract(self, text: str, doc_id: str, chunk_id: int) -> dict:
+    def extract(self, text: str, doc_id: str, chunk_id: int, u_ctx_id: str) -> dict:
         """Returns {extractions, chunk_signals, errors}.
 
         - extractions: dict[str, list[dict]]; span-level only, gated by SPAN_LEVEL_CLASSES.
@@ -716,7 +719,7 @@ class PavementExtractor:
         errors: dict[str, str | None] = {"span": None, "chunk": None}
 
         def _span_task() -> dict[str, list[dict]]:
-            return self._extract_spans(text, doc_id, chunk_id)
+            return self._extract_spans(text, doc_id, chunk_id, u_ctx_id)
 
         def _chunk_task() -> dict:
             signals: ChunkSignals = self.chunk_extractor.extract(text, doc_id, chunk_id)
@@ -825,6 +828,29 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         chunks_doc: dict = _read_json(chunks_path)
         texts: list[dict] = chunks_doc.get("texts", [])
 
+        # Load -logic-ctx.json (if present) to map logic chunk_id -> u_ctx_id.
+        # Built robust to N:1 (multiple logic chunks per context) — a logic chunk
+        # appearing in multiple contexts gets the last one's u_ctx_id.
+        ctx_path: Path = chunks_path.with_name(f"{doc_id}-logic-ctx.json")
+        chunk_id_to_uctx: dict[int, str] = {}
+        if ctx_path.exists():
+            ctx_doc: dict = _read_json(ctx_path)
+            for ctx_entry in ctx_doc.get("contexts", []):
+                u_ctx_id: str = ctx_entry.get("u_ctx_id", "")
+                for ch in ctx_entry.get("chunks", []):
+                    cid = ch.get("chunk_id")
+                    if cid is not None and u_ctx_id:
+                        chunk_id_to_uctx[cid] = u_ctx_id
+        else:
+            logger.log(
+                "CHUNK",
+                f"{doc_id}: -logic-ctx.json not found at {ctx_path}; "
+                f"falling back to 1:1 ctx_id derivation",
+            )
+
+        def _u_ctx_for(cid: int) -> str:
+            return chunk_id_to_uctx.get(cid, f"{doc_id}-ctx-{cid}")
+
         # v5: process chunks concurrently within a doc; preserve chunk_id order
         # by iterating the futures list in submission order (not as_completed).
         artifacts: list[dict] = []
@@ -836,19 +862,23 @@ def main(cfg: dict, overwrite: bool = False) -> None:
                 (
                     chunk["chunk_id"],
                     chunk.get("tokens", 0),
+                    _u_ctx_for(chunk["chunk_id"]),
                     pool.submit(
                         extractor.extract,
                         chunk["text"],
                         doc_id,
                         chunk["chunk_id"],
+                        _u_ctx_for(chunk["chunk_id"]),
                     ),
                 )
                 for chunk in texts
             ]
-            for chunk_id, tokens, fut in futures:
+            for chunk_id, tokens, u_ctx_id, fut in futures:
                 result: dict = fut.result()
                 artifacts.append({
                     "chunk_id": chunk_id,
+                    "u_logic_chunk_id": f"{doc_id}-logic-chunk-{chunk_id}",
+                    "u_ctx_id": u_ctx_id,
                     "tokens": tokens,
                     "extractions": result["extractions"],
                     "chunk_signals": result["chunk_signals"],

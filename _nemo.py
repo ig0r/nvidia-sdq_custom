@@ -244,7 +244,12 @@ class QAGenerator:
                 rec_pieces = self.chunker.last_recursive_pieces
 
             rec_chunks: dictlist = [
-                {"text": p, "chunk_id": idx, "tokens": get_token_count(p)}
+                {
+                    "text": p,
+                    "chunk_id": idx,
+                    "u_chunk_id": f"{doc_id}-chunk-{idx}",
+                    "tokens": get_token_count(p),
+                }
                 for idx, p in enumerate(rec_pieces)
             ]
             files.write_json(
@@ -294,8 +299,13 @@ class QAGenerator:
                 {
                     "text": ch,
                     "chunk_id": idx,
+                    "u_logic_chunk_id": f"{doc_id}-logic-chunk-{idx}",
                     "tokens": get_token_count(ch),
                     "source_chunk_ids": sources[idx] if idx < len(sources) else [],
+                    "source_u_chunk_ids": [
+                        f"{doc_id}-chunk-{src}"
+                        for src in (sources[idx] if idx < len(sources) else [])
+                    ],
                 }
                 for idx, ch in enumerate(raw_chunks_text)
             ]
@@ -356,6 +366,7 @@ class QAGenerator:
 
         async def _eval_one(chunk: dict) -> dict:
             cid: int = chunk["chunk_id"]
+            u_cid: str = chunk["u_chunk_id"]
             async with sem:
                 try:
                     user_content = prompt_template.format(CHUNK=chunk["text"])
@@ -384,6 +395,7 @@ class QAGenerator:
 
                     return {
                         "chunk_id": cid,
+                        "u_chunk_id": u_cid,
                         "score": float(judgment.score),
                         "reason": judgment.reason,
                         "scratchpad": scratchpad,
@@ -396,6 +408,7 @@ class QAGenerator:
                     )
                     return {
                         "chunk_id": cid,
+                        "u_chunk_id": u_cid,
                         "score": 1.0,
                         "reason": f"error: {exc}",
                         "scratchpad": None,
@@ -589,7 +602,13 @@ class QAGenerator:
             return cached.get("contexts", []) if isinstance(cached, dict) else cached
 
         ctx: dictlist = [
-            {"chunks": [chunk], "tokens": chunk.get("tokens", 0)} for chunk in chunks
+            {
+                "u_ctx_id": f"{doc_id}-ctx-{idx}",
+                "source_u_logic_chunk_ids": [chunk.get("u_logic_chunk_id")],
+                "chunks": [chunk],
+                "tokens": chunk.get("tokens", 0),
+            }
+            for idx, chunk in enumerate(chunks)
         ]
 
         budget: int = self.llm.cfg.max_input_tokens
