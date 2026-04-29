@@ -195,7 +195,7 @@ Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title
             "text": "Good pavement design practice is to provide adequate drainage to prevent water from being trapped within the pavement structure, which can reduce pavement performance.",
             "char_interval": {"start_pos": 233, "end_pos": 401},
             "attributes": {
-              "summary": "The chunk establishes when separate pavement design analyses are required, identifies the designer's responsibility to submit them for District approval, and recommends adequate drainage as best practice.",
+              "summary": "Separate pavement design analyses are required when projected 18-kip ESALs vary substantially between adjacent construction sections; the designer submits the analysis to the District for approval; adequate drainage is identified as good pavement design practice.",
               "document_function": "requirement, approval workflow, and best practice",
               "scope": "pavement design analyses for adjacent construction sections"
             }

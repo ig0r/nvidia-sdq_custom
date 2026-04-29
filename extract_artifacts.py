@@ -523,12 +523,12 @@ CHUNK_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
                 ),
                 attributes={
                     "summary": (
-                        "The chunk specifies how to proportion RCA concrete: defines "
-                        "RCA, names the volumetric air-content test method, gives the "
-                        "w/cm formula, sets replacement-level limits and an exception "
-                        "for ASR-affected source concrete, describes the trial-mix "
-                        "procedure, and states the default 28-day flexural strength "
-                        "assumption used for ME pavement design."
+                        "Recycled concrete aggregate (RCA) is defined; the volumetric "
+                        "air-content test method, w/cm formula, coarse-RCA replacement "
+                        "limits with an exception for ASR-affected source concrete, a "
+                        "stepwise trial-mix proportioning procedure, and a default "
+                        "28-day flexural strength assumption for mechanistic-empirical "
+                        "rigid pavement design are specified."
                     ),
                     "document_function": "definition and material guidance",
                     "scope": "RCA concrete mix design and rigid pavement design with RCA",
@@ -620,13 +620,14 @@ CHUNK_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
                 ),
                 attributes={
                     "summary": (
-                        "The chunk reports an observed reduction in RCA-concrete "
-                        "compressive strength relative to conventional mixtures, "
-                        "identifies transverse cracking and its cause in an existing "
-                        "brick-based pavement, documents the team's selection of "
-                        "ultrathin whitetopping over an asphaltic concrete overlay, "
-                        "and recommends practices for stockpile moisture monitoring "
-                        "and RCA blending where source concrete is variable."
+                        "RCA concrete shows a 10 to 15 percent reduction in compressive "
+                        "strength relative to conventional mixtures; transverse cracking "
+                        "is the dominant distress in an existing brick-based pavement, "
+                        "attributed to the brittle brick base combined with the flexible "
+                        "asphalt overlay; ultrathin whitetopping was selected over an "
+                        "asphaltic concrete overlay; recommended practices include close "
+                        "monitoring of stockpile moisture and blending RCA with virgin "
+                        "aggregate when source concrete is variable."
                     ),
                     "document_function": "finding, decision, and recommendation",
                     "scope": "RCA concrete pavement performance and brick-street rehabilitation",

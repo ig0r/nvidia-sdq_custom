@@ -11,9 +11,10 @@ Quantity rules:
 - pavement_engineering_term: extract zero or more, but only important domain terms.
 Rules for chunk_summary:
 - Set extraction_text to the last complete sentence of the chunk. If the chunk ends mid-fragment (a list item, equation, or partial line), use the closest preceding complete sentence.
-- Provide the actual chunk overview in the summary attribute as one or two sentences grounded in the chunk. Do not add information not supported by the chunk.
-- Set document_function to describe what the chunk is doing, using one or more of: requirement, procedure, design guidance, calculation guidance, definition, approval workflow, material guidance, construction guidance, testing guidance, maintenance guidance, finding, recommendation, rationale, issue, risk, evidence, example.
-- Set scope when the chunk states where, when, or to what it applies.
+- Provide a one or two sentence content summary in the summary attribute, grounded in the source. Do not add information not supported by the source.
+- Write the summary as a self-contained statement of the content. Do not refer to the chunk, segment, passage, section, document, or text. Do not begin with meta-phrases such as "The chunk", "This chunk", "The text", "This passage", "This section", "The document", "The passage describes", or "This excerpt". State the content directly.
+- Set document_function to describe what the source is doing, using one or more of: requirement, procedure, design guidance, calculation guidance, definition, approval workflow, material guidance, construction guidance, testing guidance, maintenance guidance, finding, recommendation, rationale, issue, risk, evidence, example.
+- Set scope when the source states where, when, or to what it applies.
 Rules for chunk_topic:
 - Use an exact source span that supports the topic as extraction_text.
 - Store the normalized topic label in the topic attribute. Use concise labels, not full sentences.
