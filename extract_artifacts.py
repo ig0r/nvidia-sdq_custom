@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -574,6 +575,7 @@ class LXConfig:
     api_key: str | None = None
     temperature: float = 0.0
     extraction_passes: int = 2                              # span-level recall passes
+    chunk_concurrency: int = 8                              # per-doc thread pool size (tier-2 default)
     max_char_buffer: int = 10000
     prompt_name: str = "nemo_logic-artifacts-04-span"        # span-level (langextract)
     chunk_prompt_name: str = "nemo_logic-artifacts-04-chunk" # chunk-level (OpenAI Structured Outputs)
@@ -597,7 +599,8 @@ class ChunkLevelExtractor:
         if not prompt_path.exists():
             raise FileNotFoundError(f"Chunk prompt not found: {prompt_path}")
         self.system_prompt: str = prompt_path.read_text(encoding="utf-8")
-        self.client: OpenAI = OpenAI(api_key=api_key)
+        # max_retries=5 (default 2) absorbs burst 429s under v5 thread concurrency.
+        self.client: OpenAI = OpenAI(api_key=api_key, max_retries=5)
 
     def extract(self, text: str, doc_id: str, chunk_id: int) -> ChunkSignals:
         completion = self.client.beta.chat.completions.parse(
@@ -703,31 +706,41 @@ class PavementExtractor:
         - extractions: dict[str, list[dict]]; span-level only, gated by SPAN_LEVEL_CLASSES.
         - chunk_signals: ChunkSignals.model_dump() or None on chunk-call failure.
         - errors: dict with keys 'span' and 'chunk'; each null on success or str(exc) on failure.
+
+        Span and chunk calls run concurrently in a 2-worker thread pool (v5).
+        Per-call failure isolation is preserved — each future's .result() is
+        awaited under its own try/except.
         """
         extractions: dict[str, list[dict]] = {}
         chunk_signals: dict | None = None
         errors: dict[str, str | None] = {"span": None, "chunk": None}
 
-        # Span-level call (langextract; v3 transformation logic preserved).
-        try:
-            extractions = self._extract_spans(text, doc_id, chunk_id)
-        except Exception as exc:
-            logger.log(
-                "NLP",
-                f"{doc_id} chunk {chunk_id}: span extraction failed: {exc}",
-            )
-            errors["span"] = str(exc)
+        def _span_task() -> dict[str, list[dict]]:
+            return self._extract_spans(text, doc_id, chunk_id)
 
-        # Chunk-level call (OpenAI Structured Outputs).
-        try:
+        def _chunk_task() -> dict:
             signals: ChunkSignals = self.chunk_extractor.extract(text, doc_id, chunk_id)
-            chunk_signals = signals.model_dump()
-        except Exception as exc:
-            logger.log(
-                "NLP",
-                f"{doc_id} chunk {chunk_id}: chunk-signals extraction failed: {exc}",
-            )
-            errors["chunk"] = str(exc)
+            return signals.model_dump()
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"chunk{chunk_id}") as pool:
+            f_span = pool.submit(_span_task)
+            f_chunk = pool.submit(_chunk_task)
+            try:
+                extractions = f_span.result()
+            except Exception as exc:
+                logger.log(
+                    "NLP",
+                    f"{doc_id} chunk {chunk_id}: span extraction failed: {exc}",
+                )
+                errors["span"] = str(exc)
+            try:
+                chunk_signals = f_chunk.result()
+            except Exception as exc:
+                logger.log(
+                    "NLP",
+                    f"{doc_id} chunk {chunk_id}: chunk-signals extraction failed: {exc}",
+                )
+                errors["chunk"] = str(exc)
 
         return {
             "extractions": extractions,
@@ -812,20 +825,35 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         chunks_doc: dict = _read_json(chunks_path)
         texts: list[dict] = chunks_doc.get("texts", [])
 
+        # v5: process chunks concurrently within a doc; preserve chunk_id order
+        # by iterating the futures list in submission order (not as_completed).
         artifacts: list[dict] = []
-        for chunk in texts:
-            chunk_id: int = chunk.get("chunk_id")
-            tokens: int = chunk.get("tokens", 0)
-            result: dict = extractor.extract(
-                text=chunk["text"], doc_id=doc_id, chunk_id=chunk_id
-            )
-            artifacts.append({
-                "chunk_id": chunk_id,
-                "tokens": tokens,
-                "extractions": result["extractions"],
-                "chunk_signals": result["chunk_signals"],
-                "errors": result["errors"],
-            })
+        with ThreadPoolExecutor(
+            max_workers=lx_cfg.chunk_concurrency,
+            thread_name_prefix=doc_id,
+        ) as pool:
+            futures = [
+                (
+                    chunk["chunk_id"],
+                    chunk.get("tokens", 0),
+                    pool.submit(
+                        extractor.extract,
+                        chunk["text"],
+                        doc_id,
+                        chunk["chunk_id"],
+                    ),
+                )
+                for chunk in texts
+            ]
+            for chunk_id, tokens, fut in futures:
+                result: dict = fut.result()
+                artifacts.append({
+                    "chunk_id": chunk_id,
+                    "tokens": tokens,
+                    "extractions": result["extractions"],
+                    "chunk_signals": result["chunk_signals"],
+                    "errors": result["errors"],
+                })
 
         _write_json({"doc_id": doc_id, "artifacts": artifacts}, out_path)
         logger.log(
