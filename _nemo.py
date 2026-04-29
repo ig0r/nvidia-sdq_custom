@@ -1,15 +1,19 @@
+import os
 import re
 import json
 import asyncio
 import argparse
 import random
+from typing import Literal
 import numpy as np
 import tiktoken as tikt
 from pathlib import Path
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
 from aisa.utils import files, logger, dictlist
 from aisa.gen import BaseLLM, LLMConfig, Embedder, EmbedConfig
 from aisa.parse.chunk import RecursiveChunker
-from aisa.parse.chunkers import Chunker, get_chunker
+from aisa.parse.chunkers import Chunker, get_chunker, group_kept_pieces
 
 SYS_PROMPTS: dict[str, str] = {
     "artifacts": "You are an expert at analyzing documents and extracting semantic artifacts.",
@@ -101,6 +105,22 @@ def _trim_overlap_for_context(chunk_group: dictlist) -> dictlist:
     return cleaned
 
 
+RELEVANCE_SCORE = Literal[0, 0.5, 1]
+
+
+class RelevanceJudgment(BaseModel):
+    score: RELEVANCE_SCORE = Field(
+        description="1=clearly relevant pavement engineering content; 0.5=unsure/mixed; 0=closed-list noise"
+    )
+    reason: str = Field(description="Brief explanation, ≤15 words")
+
+
+_JSON_BLOCK_RE = re.compile(r"<json>\s*(.*?)\s*</json>", re.DOTALL)
+_SCRATCHPAD_BLOCK_RE = re.compile(r"<scratchpad>\s*(.*?)\s*</scratchpad>", re.DOTALL)
+_FENCE_OPEN_RE = re.compile(r"\A```\w*\s*", re.MULTILINE)
+_FENCE_CLOSE_RE = re.compile(r"\s*```\s*\Z", re.MULTILINE)
+
+
 class QAGenerator:
     def __init__(
         self,
@@ -141,6 +161,26 @@ class QAGenerator:
         self.chunk_cfg: dict = chunk_cfg
         self.chunker: Chunker = get_chunker(chunk_cfg, llm)
 
+        # relevance filter (mode 3 only). Eager AsyncOpenAI init when enabled.
+        self.relevance_concurrency: int = max(
+            1, int(chunk_cfg.get("relevance_concurrency", 8))
+        )
+        self.eval_client: AsyncOpenAI | None = None
+        filter_on: bool = bool(chunk_cfg.get("relevance_filter", False))
+        if filter_on and chunk_cfg.get("method") == "random_logical":
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is required when [chunking].relevance_filter = true"
+                )
+            self.eval_client = AsyncOpenAI(api_key=api_key)
+        elif filter_on:
+            logger.log(
+                "CHUNK",
+                f"relevance_filter ignored: only honored for method='random_logical' "
+                f"(got method={chunk_cfg.get('method')!r})",
+            )
+
         # build directories
         method: str = chunk_cfg.get("method", "recursive")
         c_size: int = chunk_cfg.get("chunk_size", 256)
@@ -165,13 +205,13 @@ class QAGenerator:
             logger.log("NLP", f"No .md files found in {self.input_dir}")
             return
         for file_path in md_files:
-            chunks: dictlist = self.path2chunks(file_path)
+            chunks: dictlist = await self.path2chunks(file_path)
             logger.log(
                 "CHUNK",
                 f"{file_path.name}: {len(chunks)} chunks -> {self.doc_paths[file_path]}",
             )
 
-    def path2chunks(self, file_path: Path) -> dictlist:
+    async def path2chunks(self, file_path: Path) -> dictlist:
         abs_path, filename = files.split_path(str(file_path))
         doc_id: str = "_".join(filename.split("_")[:2])
         base_out: str = f"{self.chunk_dir}/{doc_id}-chunks.json"
@@ -190,12 +230,19 @@ class QAGenerator:
         images = MD_PATTERNS["image"].findall(raw_text)
         raw_text = MD_PATTERNS["table"].sub("", raw_text)
         raw_text = MD_PATTERNS["image"].sub("", raw_text)
-        raw_chunks: list[str] = self.chunker.split(raw_text)
         parsed_file: str = str(abs_path) + "/" + filename
 
         if is_hybrid:
-            rec_pieces: list[str] = self.chunker.last_recursive_pieces
-            sources: list[list[int]] = self.chunker.last_source_indices
+            filter_on: bool = self.eval_client is not None
+
+            if filter_on:
+                # 1. Recursive pre-split (driven inline so we can filter before grouping)
+                rec_pieces: list[str] = self.chunker.recursive.split(raw_text)
+            else:
+                # Existing flow: chunker.split() does both pre-split and grouping in one pass
+                raw_chunks_text: list[str] = self.chunker.split(raw_text)
+                rec_pieces = self.chunker.last_recursive_pieces
+
             rec_chunks: dictlist = [
                 {"text": p, "chunk_id": idx, "tokens": get_token_count(p)}
                 for idx, p in enumerate(rec_pieces)
@@ -210,6 +257,39 @@ class QAGenerator:
                 },
                 base_out,
             )
+
+            if filter_on:
+                # 2. Per-piece relevance evaluation
+                try:
+                    scores: dictlist = await self.evaluate_chunks(
+                        file_path, rec_chunks
+                    )
+                    kept_indices: list[int] = [
+                        c["chunk_id"]
+                        for c, s in zip(rec_chunks, scores)
+                        if s["score"] > 0.5
+                    ]
+                except Exception as exc:
+                    logger.log(
+                        "CHUNK",
+                        f"{file_path.name}: relevance filter failed ({exc!r}); "
+                        f"falling back to keep-all",
+                    )
+                    kept_indices = list(range(len(rec_pieces)))
+
+                # 3. Mask-aware logical grouping
+                raw_chunks_text, sources = group_kept_pieces(
+                    rec_pieces,
+                    kept_indices,
+                    self.llm,
+                    self.chunker.prompt_template,
+                    self.chunker.window,
+                    self.chunker.stride,
+                    self.chunker.recursive_overlap > 0,
+                )
+            else:
+                sources = self.chunker.last_source_indices
+
             logic_chunks: dictlist = [
                 {
                     "text": ch,
@@ -217,7 +297,7 @@ class QAGenerator:
                     "tokens": get_token_count(ch),
                     "source_chunk_ids": sources[idx] if idx < len(sources) else [],
                 }
-                for idx, ch in enumerate(raw_chunks)
+                for idx, ch in enumerate(raw_chunks_text)
             ]
             files.write_json(
                 {
@@ -231,9 +311,11 @@ class QAGenerator:
             )
             return logic_chunks
 
+        # Non-hybrid (mode 1, mode 2): unchanged
+        raw_chunks_text = self.chunker.split(raw_text)
         chunks: dictlist = [
             {"text": ch, "chunk_id": idx, "tokens": get_token_count(ch)}
-            for idx, ch in enumerate(raw_chunks)
+            for idx, ch in enumerate(raw_chunks_text)
         ]
         files.write_json(
             {
@@ -247,6 +329,94 @@ class QAGenerator:
         )
 
         return chunks
+
+    async def evaluate_chunks(self, file_path: Path, chunks: dictlist) -> dictlist:
+        """Score each recursive chunk for pavement-engineering relevance via OpenAI
+        chat completions with chain-of-thought + tagged-JSON output. One LLM call per
+        recursive piece; calls run concurrently bounded by self.relevance_concurrency.
+
+        Caller (path2chunks) only invokes this when method == "random_logical" and
+        [chunking].relevance_filter is true; the method itself does not gate on mode.
+        Assumes self.eval_client is not None (constructed in __init__ when the filter
+        is on).
+        """
+        base_out: str = self.doc_paths[file_path].replace(
+            "-chunks.json", "-relevance.json"
+        )
+        if Path(base_out).exists() and not self.overwrite:
+            cached = files.read_json(base_out)
+            scores_cached: dictlist = (
+                cached.get("scores", []) if isinstance(cached, dict) else cached
+            )
+            logger.log("CHUNK", f"{file_path.name}: cache hit -> {base_out}")
+            return scores_cached
+
+        prompt_template: str = self.llm.read_prompt("nemo_eval-02")
+        sem = asyncio.Semaphore(self.relevance_concurrency)
+
+        async def _eval_one(chunk: dict) -> dict:
+            cid: int = chunk["chunk_id"]
+            async with sem:
+                try:
+                    user_content = prompt_template.format(CHUNK=chunk["text"])
+                    completion = await self.eval_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        temperature=0.0,
+                        messages=[{"role": "user", "content": user_content}],
+                    )
+                    text: str = completion.choices[0].message.content or ""
+
+                    json_match = _JSON_BLOCK_RE.search(text)
+                    if not json_match:
+                        raise RuntimeError(
+                            f"no <json> block in response (head: {text[:200]!r})"
+                        )
+                    json_text = json_match.group(1).strip()
+                    json_text = _FENCE_OPEN_RE.sub("", json_text)
+                    json_text = _FENCE_CLOSE_RE.sub("", json_text).strip()
+
+                    judgment = RelevanceJudgment.model_validate_json(json_text)
+
+                    scratch_match = _SCRATCHPAD_BLOCK_RE.search(text)
+                    scratchpad = (
+                        scratch_match.group(1).strip() if scratch_match else None
+                    )
+
+                    return {
+                        "chunk_id": cid,
+                        "score": float(judgment.score),
+                        "reason": judgment.reason,
+                        "scratchpad": scratchpad,
+                    }
+                except Exception as exc:
+                    logger.log(
+                        "CHUNK",
+                        f"{file_path.name}: chunk_id={cid} eval failed "
+                        f"({exc!r}); defaulting to score=1.0",
+                    )
+                    return {
+                        "chunk_id": cid,
+                        "score": 1.0,
+                        "reason": f"error: {exc}",
+                        "scratchpad": None,
+                    }
+
+        scores: dictlist = await asyncio.gather(*[_eval_one(c) for c in chunks])
+
+        bins: dict[float, int] = {0.0: 0, 0.5: 0, 1.0: 0}
+        for s in scores:
+            bins[s["score"]] = bins.get(s["score"], 0) + 1
+        logger.log(
+            "CHUNK",
+            f"{file_path.name}: {bins[1.0]}/{len(chunks)} pieces kept "
+            f"(filtered {bins[0.0]}; unsure {bins[0.5]})",
+        )
+
+        doc_id: str = Path(self.doc_paths[file_path]).name.replace(
+            "-chunks.json", ""
+        )
+        files.write_json({"doc_id": doc_id, "scores": scores}, base_out)
+        return scores
 
     async def extract_artifacts(self, file_path: Path, chunks: dictlist) -> dictlist:
         prompt: str = self.llm.read_prompt("nemo_artifacts")
@@ -379,7 +549,7 @@ class QAGenerator:
     async def run_sgd_pipeline(self):
         res: dictlist = []
         for file_path in Path(self.input_dir).glob("*.md"):
-            chunks: dictlist = self.path2chunks(file_path)
+            chunks: dictlist = await self.path2chunks(file_path)
             artifacts: dictlist = await self.extract_artifacts(file_path, chunks)
             fact_blocks: list[str] = get_fact_blocks(artifacts)
             ctx_blocks: list[str] = get_ctx_blocks(
@@ -448,7 +618,7 @@ class QAGenerator:
             return
 
         for file_path in md_files:
-            chunks: dictlist = self.path2chunks(file_path)
+            chunks: dictlist = await self.path2chunks(file_path)
             ctx: dictlist = self._build_logical_contexts(file_path, chunks)
             out_path: str = self.doc_paths[file_path].replace(
                 "-chunks.json", "-logic-ctx.json"

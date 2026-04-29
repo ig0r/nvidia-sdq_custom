@@ -1,7 +1,7 @@
 # GENERAL SETTINGS
 [general]
-output_dir = "./data/nemo_briefs_20260422"
-data_dir = "./rawdata/parsed-techbriefs"
+output_dir = "./data/_test/chunk_test-random-logic2"#"./data/nemo_briefs_20260422"
+data_dir = "./small_corpus/parsed-techbriefs"#"./rawdata/parsed-techbriefs"
 metadata_folder = "./rawdata-pub242/metadata"
 [general.theme]
 cmap = "gist_rainbow"
@@ -69,6 +69,9 @@ logical_stride = 30            # slide amount (logical only, <= logical_window)
 # random_logical (recursive pre-split + LLM grouping)
 hybrid_window = 8              # recursive pieces per LLM call (random_logical only); hybrid_window × chunk_size <= [llm].max_input_tokens
 hybrid_stride = 6              # slide amount (random_logical only, <= hybrid_window)
+# relevance filter (random_logical only): per-piece eval against prompts/nemo_eval-02.txt before logical grouping
+relevance_filter = true        # enable/disable; only honored when method == "random_logical"; OPENAI_API_KEY required when on
+relevance_concurrency = 8      # bounds in-flight per-piece eval calls (any positive int)
 
 # LANGEXTRACT (Step 2 of mode-3 logical flow; consumed only by extract_artifacts.py)
 [langextract]
