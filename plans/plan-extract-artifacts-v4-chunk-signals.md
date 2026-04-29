@@ -24,9 +24,9 @@ v4 keeps span-level on langextract unchanged and routes chunk-level through a di
 - New Pydantic models in `extract_artifacts.py`: `ChunkSummary`, `ChunkTopic`, `PavementTerm`, `ChunkSignals`. Type-specific enums exposed as Python `Literal[...]` aliases: `DOCUMENT_FUNCTION`, `TOPIC_ROLE`, `TERM_CATEGORY`.
 - New `ChunkLevelExtractor` class wrapping `openai.OpenAI().beta.chat.completions.parse(response_format=ChunkSignals, …)`. Returns a validated `ChunkSignals` object per chunk.
 - `LXConfig` reshaped: drop `prompt_name_chunk` and `chunk_extraction_passes`; add `chunk_prompt_name` (default `"nemo_logic-artifacts-04-chunk"`). The chunk model + temperature reuse the existing fields by default; advanced operators can override the chunk prompt only.
-- `PavementExtractor.extract` returns a unified per-chunk record `{"extractions": <span-bucketed-dict>, "chunk_signals": <dict|None>, "error": <str|None>}` instead of just the bucketed dict. Per-call failure isolation now distinguishes span vs chunk failures.
-- Per-chunk wrapper in `-logic-artifacts.json` gains a top-level `chunk_signals` field alongside `extractions`. Span-level `extractions` shape is unchanged from v3.
-- `extract_artifacts.toml` `[langextract]` simplified: drop `chunk_extraction_passes`, rename `prompt_name_span` → `prompt_name`, add `chunk_prompt_name`.
+- `PavementExtractor.extract` returns a unified per-chunk record `{"extractions": <span-bucketed-dict>, "chunk_signals": <dict|None>, "errors": {"span": <str|None>, "chunk": <str|None>}}` instead of just the bucketed dict. Per-call failure isolation populates the corresponding `errors.<call>` slot.
+- Per-chunk wrapper in `-logic-artifacts.json` gains two top-level fields: `chunk_signals` and `errors` (always-present dict with `span` and `chunk` keys). Span-level `extractions` shape is unchanged from v3.
+- `extract_artifacts.toml` `[artifact_extraction]` block (renamed from v3's `[langextract]`): drop `chunk_extraction_passes`, rename `prompt_name_span` → `prompt_name`, add `chunk_prompt_name`.
 - `docs/qa-generation.md` Step 2 section updated.
 - `reqs.txt` — no change needed (`openai==1.91.0` and `pydantic==2.11.7` already pinned via langextract's transitive deps; we use them directly now).
 
@@ -42,6 +42,45 @@ v4 keeps span-level on langextract unchanged and routes chunk-level through a di
 - Deletion of v1 / v2 / v3 prompt files — kept on disk for reference.
 - Schema-version marker at the doc level — still deferred (per-chunk shape disambiguates v3 vs v4: v4 has `chunk_signals` field, v3 does not).
 - Inline few-shot example inside the v4 chunk prompt. Start with prompt+schema only; add an inline JSON example later if quality issues emerge.
+
+## Per-chunk extraction flow (v4)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as main()
+    participant PE as PavementExtractor
+    participant LX as langextract
+    participant CE as ChunkLevelExtractor
+    participant OAI as OpenAI SDK
+
+    Caller->>PE: extract(text, doc_id, chunk_id)
+    Note over PE,LX: Span-level call (extraction_passes=2)
+    PE->>LX: lx.extract(span prompt, SPAN_LEVEL_EXAMPLES)
+    alt span call succeeds
+        LX-->>PE: extractions
+        PE->>PE: gate vs SPAN_LEVEL_CLASSES; promote description/significance
+    else span call fails
+        LX-->>PE: exception
+        PE->>PE: errors["span"] = str(exc)
+    end
+    Note over PE,OAI: Chunk-level call (single pass)
+    PE->>CE: extract(text, doc_id, chunk_id)
+    CE->>OAI: parse(response_format=ChunkSignals)
+    alt chunk call succeeds
+        OAI-->>CE: ChunkSignals (Pydantic-validated)
+        CE->>CE: soft-cap topics at 5
+        CE-->>PE: ChunkSignals
+        PE->>PE: model_dump()
+    else chunk call fails
+        OAI-->>CE: exception
+        CE-->>PE: re-raise
+        PE->>PE: errors["chunk"] = str(exc)
+    end
+    PE-->>Caller: {extractions, chunk_signals, errors}
+```
+
+The two calls are independent — either can fail without aborting the other. `errors` is always present as a dict with `span` and `chunk` keys (each `null` on success).
 
 ## Concrete changes
 
@@ -173,24 +212,24 @@ class ChunkLevelExtractor:
 def extract(self, text: str, doc_id: str, chunk_id: int) -> dict:
     span_extractions: dict = {}
     chunk_signals: dict | None = None
-    error: str | None = None
+    errors: dict[str, str | None] = {"span": None, "chunk": None}
     # Span-level call (langextract; unchanged from v3)
     try:
         span_extractions = self._extract_spans(text, doc_id, chunk_id)
     except Exception as exc:
         logger.log("NLP", f"{doc_id} chunk {chunk_id}: span extraction failed: {exc}")
-        error = f"span: {exc}"
+        errors["span"] = str(exc)
     # Chunk-level call (OpenAI Structured Outputs)
     try:
         signals = self.chunk_extractor.extract(text, doc_id, chunk_id)
         chunk_signals = signals.model_dump(exclude_none=False)
     except Exception as exc:
         logger.log("NLP", f"{doc_id} chunk {chunk_id}: chunk-signals extraction failed: {exc}")
-        error = f"{error}; chunk: {exc}" if error else f"chunk: {exc}"
+        errors["chunk"] = str(exc)
     return {
         "extractions": span_extractions,
         "chunk_signals": chunk_signals,
-        "error": error,
+        "errors": errors,
     }
 ```
 
@@ -203,13 +242,14 @@ artifacts.append({
     "tokens": tokens,
     "extractions": result["extractions"],
     "chunk_signals": result["chunk_signals"],
-    **({"error": result["error"]} if result["error"] else {}),
+    "errors": result["errors"],
 })
 ```
+`errors` is always present; both keys (`span`, `chunk`) are `null` on full success.
 
 ### Modify: `extract_artifacts.toml`
 ```toml
-[langextract]
+[artifact_extraction]
 model = "gpt-4o-mini"
 temperature = 0.0
 extraction_passes = 2                       # span-level recall passes
@@ -219,7 +259,7 @@ chunk_prompt_name = "nemo_logic-artifacts-04-chunk"
 prompt_lib = "./prompts"
 # api_key resolved from .env::OPENAI_API_KEY at runtime if absent here
 ```
-Removed: `chunk_extraction_passes`, `prompt_name_span`, `prompt_name_chunk`. The `[langextract]` section name is retained for backward-compat config loading even though the chunk call is now direct OpenAI; the section is *config for the artifact-extraction step*, not "config for langextract specifically".
+Removed: `chunk_extraction_passes`, `prompt_name_span`, `prompt_name_chunk`. **Section header renamed**: v3's `[langextract]` becomes `[artifact_extraction]` — v3's name was accurate when both calls went through langextract, but with the chunk call moved to direct OpenAI Structured Outputs, the old name was misleading. No alias kept; clean break. Operators upgrading from v3 must rename the section header in their config.
 
 ### Modify: `docs/qa-generation.md`
 - Class table: keep the 21 span-level rows. Remove the chunk-level subsection table (3 rows). Replace with a description of the `chunk_signals` field shape.
@@ -237,8 +277,9 @@ Removed: `chunk_extraction_passes`, `prompt_name_span`, `prompt_name_chunk`. The
 
 ## Behavior notes
 
-- **Per-chunk wrapper grows a `chunk_signals` field.** Top-level shape (`{doc_id, artifacts: [...]}`) unchanged. Per-chunk wrapper now `{chunk_id, tokens, extractions, chunk_signals, [error]}`.
-- **`chunk_signals` is a dict, not a list.** It contains a single summary, a list of 1-5 topics, and 0+ terms. On chunk-level failure, `chunk_signals` is `null` and `error` carries `"chunk: <message>"`. On span failure, `extractions` is `{}` and `error` carries `"span: <message>"`. Both can fail independently; `error` accumulates.
+- **Per-chunk wrapper grows two fields.** Top-level shape (`{doc_id, artifacts: [...]}`) unchanged. Per-chunk wrapper now `{chunk_id, tokens, extractions, chunk_signals, errors}`. All four new/changed fields are always present.
+- **`chunk_signals` is a dict, not a list.** It contains a single summary, a list of 1-5 topics, and 0+ terms. On chunk-level failure, `chunk_signals` is `null`. On span failure, `extractions` is `{}`. Both can fail independently.
+- **`errors` is always a dict** with keys `span` and `chunk`. Each value is `null` on success or an exception message on failure. Consumers dispatch on which key is non-null without parsing prefixes.
 - **No `artifact_id` on chunk-level entries.** Topics and terms are list-items inside `chunk_signals` — identified by chunk_id + array index. If downstream wants stable ids, derive them: `f"{doc_id}_chunk_{cid}_topic_{i}"`. Span-level `artifact_id` format is unchanged.
 - **No `extraction_text`, no spans, no `char_interval` for chunk-level.** Topics and terms have no source offsets; they're conceptual labels and verbatim strings respectively. If `pavement_engineering_term` offsets are needed downstream, a 5-line `text.find()` post-pass can add them as a follow-up.
 - **Pydantic validation**: `summary` is exactly one object (schema-enforced); `document_functions` is `list[DOCUMENT_FUNCTION]` enum-typed; `topic_role` and `category` are enum-typed. **Length constraints on `topics` and `terms` are NOT enforced at schema level** (OpenAI Structured Outputs ignores `minItems`/`maxItems`); soft validation post-receipt logs and caps `topics` at 5.
@@ -262,14 +303,14 @@ AC harness (extending v3):
 - **AC v4-4** `SPAN_LEVEL_EXAMPLES` content is byte-equal to v3's `SPAN_LEVEL_EXAMPLES` (3 entries, 25 extractions).
 - **AC v4-5** Pydantic models import cleanly: `ChunkSummary`, `ChunkTopic`, `PavementTerm`, `ChunkSignals`. Enum aliases `DOCUMENT_FUNCTION`, `TOPIC_ROLE`, `TERM_CATEGORY` import. `ChunkSignals.model_json_schema()` includes the enum constraints.
 - **AC v4-6** `LXConfig()` defaults: `prompt_name="nemo_logic-artifacts-04-span"`, `chunk_prompt_name="nemo_logic-artifacts-04-chunk"`, `extraction_passes=2`, `max_char_buffer=10000`. No `prompt_name_span` / `prompt_name_chunk` / `chunk_extraction_passes` fields.
-- **AC v4-7** Cold run on the fixtures writes `-logic-artifacts.json`. Per-chunk wrapper shape: `{chunk_id, tokens, extractions, chunk_signals, [error]}`. `extractions` is span-level only (no `chunk_summary` / `chunk_topic` / `pavement_engineering_term` buckets). `chunk_signals` is a dict matching the `ChunkSignals` Pydantic schema.
+- **AC v4-7** Cold run on the fixtures writes `-logic-artifacts.json`. Per-chunk wrapper shape: `{chunk_id, tokens, extractions, chunk_signals, errors}` — all four mandatory. `extractions` is span-level only (no `chunk_summary` / `chunk_topic` / `pavement_engineering_term` buckets). `chunk_signals` is a dict matching the `ChunkSignals` Pydantic schema, or `null` on chunk-call failure. `errors` is always `{"span": <str|null>, "chunk": <str|null>}`.
 - **AC v4-8** Span-level entries have keys `{artifact_id, text, description, significance, char_interval, attributes}` (unchanged from v3). Chunk-level entries inside `chunk_signals.topics[]` and `chunk_signals.terms[]` have **no** `artifact_id` / `text` / `char_interval` / `description` / `significance` keys.
 - **AC v4-9** Quantity sanity: `chunk_signals.summary` is always a single object (Pydantic-enforced); `len(chunk_signals.topics) ∈ [1, 5]` (1 expected via prompt; 5 cap enforced by `ChunkLevelExtractor`); `len(chunk_signals.terms) ≥ 0`.
 - **AC v4-10** Class isolation: every key in `extractions` ∈ `SPAN_LEVEL_CLASSES`. No span-level extraction has a chunk-level class name.
 - **AC v4-11** All span-level `artifact_id`s match `^.+_chunk_\d+_art_\d+$`; uniqueness within the output dir holds.
 - **AC v4-12** Idempotency: second invocation with no `--overwrite` writes nothing and makes zero langextract / OpenAI calls.
 - **AC v4-13** Mode-3 guard rejects `recursive` and `logical`.
-- **AC v4-14** TOML grep: `prompt_name`, `chunk_prompt_name`, `extraction_passes` present with v4 values; `prompt_name_span`, `prompt_name_chunk`, `chunk_extraction_passes` not present.
+- **AC v4-14** TOML section: `[artifact_extraction]` header present; `[langextract]` header not present. Inside `[artifact_extraction]`: `prompt_name`, `chunk_prompt_name`, `extraction_passes` present with v4 values; `prompt_name_span`, `prompt_name_chunk`, `chunk_extraction_passes` not present.
 - **AC v4-15** `docs/qa-generation.md` Step 2: 21 span-level class rows; `chunk_signals` field described (not as a class, as a structured field on the wrapper); schema example shows both `extractions` and `chunk_signals`; configuration block matches v4 TOML.
 - **AC v4-16** Pydantic enum coverage: `summary.document_functions` values ∈ DOCUMENT_FUNCTION enum; `topics[].role` ∈ TOPIC_ROLE enum; `terms[].category` ∈ TERM_CATEGORY enum. (Pydantic raises `ValidationError` if model emits invalid values; failure surfaces in chunk-call error.)
 
@@ -289,6 +330,8 @@ Spot-checks:
 - **Soft cap on `topics` (5), not hard reject.** OpenAI Structured Outputs ignores `minItems`/`maxItems`. We cap and log at receipt time rather than reject the whole call. Quantity drift is observable, not fatal.
 - **No few-shot example in the chunk prompt initially.** Schema enforcement + clear field semantics replace the example-driven format steering. If real-corpus runs show level-of-detail or term-selection drift, an inline JSON example is a clean follow-up.
 - **`LXConfig` field renames clean up v3's awkward `_span` / `_chunk` suffixes.** v4 has `prompt_name` (the span prompt) and `chunk_prompt_name` (the chunk prompt). Asymmetric but aligns with span being the "default" extraction and chunk being the structured supplement.
-- **`error` field structure changed.** v3 had a single `error` string covering whichever call failed. v4 has the same single field but the value is prefixed with `"span:"` or `"chunk:"`; both prefixes can appear concatenated if both calls fail.
+- **`error` (string) → `errors` (dict) shape change.** v3 had a single optional `error` string covering whichever call failed. v4 has a required `errors` dict with two keys (`span`, `chunk`), each `null` on success or a string message on failure. The dict shape lets consumers dispatch on which call failed without parsing prefixes; both keys always present makes the schema regular.
+- **TOML section renamed `[langextract]` → `[artifact_extraction]`.** v3's name was accurate when both calls went through langextract. With the chunk call moved to direct OpenAI Structured Outputs, the v3 name misled. v4's `[artifact_extraction]` describes what the section configures (the artifact-extraction step) without coupling to a specific library. Clean break, no alias.
+- **Pydantic for chunk-level response shape, not raw JSON schema.** OpenAI's Structured Outputs API accepts both a Pydantic `BaseModel` (via `client.beta.chat.completions.parse()`) and a hand-written JSON schema dict (via `response_format={"type":"json_schema", ...}`). v4 uses Pydantic because: (a) `openai==1.91.0` already requires Pydantic (no new dep); (b) `.parse()` does schema generation, API call, parsing, and validation in one method; (c) single source of truth — the Pydantic class defines both the Python type and the JSON schema; (d) `Field(description=...)` flows into the schema as model-visible documentation; (e) `Literal[...]` enums are validated server-side via OpenAI strict mode and at parse time via Pydantic; (f) `pydantic.ValidationError` carries the exact field path on malformed output. The fallback to raw JSON schema is a ~10-line change isolated to `ChunkLevelExtractor`; reversal is cheap if `.parse()` is ever deprecated.
 - **Old prompt files kept.** v1 / v2 / v3 prompts untouched on disk. Cleanup deferred until v4 validated on a real corpus.
 - **No schema-version marker at the doc level.** Per-chunk wrapper shape (`chunk_signals` field presence) disambiguates v3 vs v4 in mixed-cache directories.

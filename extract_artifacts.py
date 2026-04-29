@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Standalone CLI: extract pavement-engineering artifacts from mode-3 logical chunks.
 
-Reads {output_dir}/doc-chunks_{size}_random_logical/*-logic-chunks.json, runs
-langextract per logical chunk with OpenAI gpt-4o-mini, writes *-logic-artifacts.json.
+Reads {output_dir}/doc-chunks_{size}_random_logical/*-logic-chunks.json. Per chunk it
+runs two extraction calls and writes both into *-logic-artifacts.json:
+- Span-level (langextract → gpt-4o-mini): 21-class normative taxonomy with verbatim spans.
+- Chunk-level (OpenAI Structured Outputs → gpt-4o-mini): a single Pydantic-validated
+  ChunkSignals object (summary + 1-5 topics + 0+ pavement_engineering_terms).
 
 Requires:
 - [chunking].method == 'random_logical' in the cfg TOML.
 - OPENAI_API_KEY in env or .env.
-- pip install langextract loguru python-dotenv
+- pip install langextract openai pydantic loguru python-dotenv
 
 Single-file standalone: no imports from the project's aisa/ package.
 """
@@ -17,10 +20,13 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from loguru import logger
 import langextract as lx
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
 
 load_dotenv()
@@ -59,13 +65,90 @@ SPAN_LEVEL_CLASSES: list[str] = [
     "evidence",
 ]
 
-CHUNK_LEVEL_CLASSES: list[str] = [
-    "chunk_summary",
-    "chunk_topic",
-    "pavement_engineering_term",
+EXTRACTION_CLASSES: list[str] = SPAN_LEVEL_CLASSES   # alias for back-compat
+
+
+# Chunk-level Pydantic schema (used as response_format for OpenAI Structured Outputs).
+DOCUMENT_FUNCTION = Literal[
+    "requirement",
+    "procedure",
+    "design guidance",
+    "calculation guidance",
+    "definition",
+    "approval workflow",
+    "material guidance",
+    "construction guidance",
+    "testing guidance",
+    "maintenance guidance",
+    "finding",
+    "recommendation",
+    "rationale",
+    "issue",
+    "risk",
+    "evidence",
+    "example",
+]
+TOPIC_ROLE = Literal["primary", "secondary"]
+TERM_CATEGORY = Literal[
+    "traffic",
+    "pavement_type",
+    "design_parameter",
+    "material",
+    "layer",
+    "method",
+    "test_method",
+    "distress",
+    "construction",
+    "maintenance",
+    "organization",
+    "form",
+    "software",
+    "other",
 ]
 
-EXTRACTION_CLASSES: list[str] = SPAN_LEVEL_CLASSES + CHUNK_LEVEL_CLASSES
+
+class ChunkSummary(BaseModel):
+    """Summary of the whole chunk."""
+    summary: str = Field(
+        description=(
+            "One or two sentence content statement, source-grounded and self-contained. "
+            "Do not refer to the chunk, passage, or text."
+        )
+    )
+    document_functions: list[DOCUMENT_FUNCTION] = Field(
+        description="One or more roles the chunk plays in the document. Pick all that apply."
+    )
+    scope: str | None = Field(
+        description="Where, when, or to what the chunk applies, if stated. Null otherwise."
+    )
+
+
+class ChunkTopic(BaseModel):
+    """A normalized topic label for a major subject of the chunk."""
+    topic: str = Field(description="Concise normalized topic label, not a full sentence.")
+    role: TOPIC_ROLE = Field(
+        description="primary for the main topic; secondary for other important topics."
+    )
+
+
+class PavementTerm(BaseModel):
+    """A pavement engineering term explicitly present in the chunk."""
+    term: str = Field(description="The term as it appears in the source (verbatim).")
+    normalized_term: str | None = Field(
+        description="Canonical version of the term, when useful. Null if already canonical."
+    )
+    category: TERM_CATEGORY = Field(description="Category of the term.")
+
+
+class ChunkSignals(BaseModel):
+    """Chunk-level signals: a single summary, 1-5 topics, 0+ pavement engineering terms."""
+    summary: ChunkSummary
+    topics: list[ChunkTopic] = Field(
+        description="One to five topics. Exactly one has role='primary'; the rest are 'secondary'."
+    )
+    terms: list[PavementTerm] = Field(
+        description="Zero or more pavement engineering terms explicitly present in the chunk."
+    )
 
 
 SPAN_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
@@ -485,239 +568,89 @@ SPAN_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
 ]
 
 
-CHUNK_LEVEL_EXAMPLES: list[lx.data.ExampleData] = [
-    # Example A — manual/spec style. Same text as SPAN_LEVEL_EXAMPLES[1] (RCA mix design),
-    # demonstrating chunk_summary span = last complete sentence of the chunk.
-    lx.data.ExampleData(
-        text=(
-            "Recycled concrete aggregate, abbreviated RCA, is aggregate produced by "
-            "crushing reclaimed hydraulic-cement concrete. The volumetric method "
-            "displaces a known volume of water from a calibrated bowl to measure the "
-            "entrained air content of fresh RCA concrete. The water-to-cementitious-"
-            "materials ratio is computed as w/cm = m_w / m_cm, where m_w is the mass "
-            "of mixing water and m_cm is the mass of all cementitious materials. The "
-            "coarse RCA replacement level governs both fresh and hardened mixture "
-            "properties and is expressed as a percentage on a volume basis. Coarse "
-            "RCA replacement greater than 50 percent triggers a strength verification "
-            "test prior to placement. RCA concrete is permitted in this specification "
-            "except for projects where the source concrete is known to be affected by "
-            "alkali-silica reaction. Use of RCA is limited to mixtures with a w/cm at "
-            "or below 0.45. To proportion a trial RCA concrete mixture, the designer "
-            "shall first batch a one-cubic-yard trial; then measure slump, air content, "
-            "and unit weight; finally adjust the paste content and retest if any "
-            "property falls outside the target range. For mechanistic-empirical rigid "
-            "pavement design, the analysis assumes a representative 28-day flexural "
-            "strength of 600 psi unless project-specific testing supports a different "
-            "value, because trial batching is generally not available before the design "
-            "phase."
-        ),
-        extractions=[
-            lx.data.Extraction(
-                extraction_class="chunk_summary",
-                extraction_text=(
-                    "For mechanistic-empirical rigid pavement design, the analysis "
-                    "assumes a representative 28-day flexural strength of 600 psi "
-                    "unless project-specific testing supports a different value, "
-                    "because trial batching is generally not available before the "
-                    "design phase."
-                ),
-                attributes={
-                    "summary": (
-                        "Recycled concrete aggregate (RCA) is defined; the volumetric "
-                        "air-content test method, w/cm formula, coarse-RCA replacement "
-                        "limits with an exception for ASR-affected source concrete, a "
-                        "stepwise trial-mix proportioning procedure, and a default "
-                        "28-day flexural strength assumption for mechanistic-empirical "
-                        "rigid pavement design are specified."
-                    ),
-                    "document_function": "definition and material guidance",
-                    "scope": "RCA concrete mix design and rigid pavement design with RCA",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="trial RCA concrete mixture",
-                attributes={
-                    "topic": "RCA concrete mix design",
-                    "topic_role": "primary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="mechanistic-empirical rigid pavement design",
-                attributes={
-                    "topic": "rigid pavement design",
-                    "topic_role": "secondary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="alkali-silica reaction",
-                attributes={
-                    "topic": "materials durability",
-                    "topic_role": "secondary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="RCA",
-                attributes={
-                    "term": "RCA",
-                    "normalized_term": "recycled concrete aggregate",
-                    "term_category": "material",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="w/cm",
-                attributes={
-                    "term": "w/cm",
-                    "normalized_term": "water-to-cementitious-materials ratio",
-                    "term_category": "design_parameter",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="28-day flexural strength",
-                attributes={
-                    "term": "28-day flexural strength",
-                    "normalized_term": "28-day flexural strength",
-                    "term_category": "design_parameter",
-                },
-            ),
-        ],
-    ),
-    # Example B — report style. Same text as SPAN_LEVEL_EXAMPLES[2] (RCA + brick-street findings).
-    lx.data.ExampleData(
-        text=(
-            "A statistical study using data from more than 100 peer-reviewed studies "
-            "indicated that RCA concrete typically exhibits a 10 to 15 percent reduction "
-            "in compressive strength compared with companion conventional concrete "
-            "mixtures. Transverse cracking is the dominant distress observed in the "
-            "existing pavement section. This cracking results from the brittleness of "
-            "the brick base combined with the flexibility of the asphalt overlay. The "
-            "investigation team selected the ultrathin whitetopping option over the "
-            "asphaltic concrete overlay alternative because the whitetopping demonstrated "
-            "better long-term performance in similar climates. Field deflection testing "
-            "using the falling weight deflectometer recorded deflections under 8 mils "
-            "across all test locations on the Oskaloosa project. Practitioners should "
-            "monitor stockpile moisture content closely, since sudden drops in moisture "
-            "have been linked to rapid workability loss during paving. Use of high-"
-            "replacement fine RCA in interstate shoulders introduces an elevated risk of "
-            "premature surface scaling under freeze-thaw exposure. Engineers should "
-            "consider blending RCA with virgin aggregate when the source concrete is "
-            "variable, because blending reduces the proportion of adhered mortar and "
-            "stabilizes the strength of the resulting mixture."
-        ),
-        extractions=[
-            lx.data.Extraction(
-                extraction_class="chunk_summary",
-                extraction_text=(
-                    "Engineers should consider blending RCA with virgin aggregate when "
-                    "the source concrete is variable, because blending reduces the "
-                    "proportion of adhered mortar and stabilizes the strength of the "
-                    "resulting mixture."
-                ),
-                attributes={
-                    "summary": (
-                        "RCA concrete shows a 10 to 15 percent reduction in compressive "
-                        "strength relative to conventional mixtures; transverse cracking "
-                        "is the dominant distress in an existing brick-based pavement, "
-                        "attributed to the brittle brick base combined with the flexible "
-                        "asphalt overlay; ultrathin whitetopping was selected over an "
-                        "asphaltic concrete overlay; recommended practices include close "
-                        "monitoring of stockpile moisture and blending RCA with virgin "
-                        "aggregate when source concrete is variable."
-                    ),
-                    "document_function": "finding, decision, and recommendation",
-                    "scope": "RCA concrete pavement performance and brick-street rehabilitation",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="whitetopping option",
-                attributes={
-                    "topic": "pavement rehabilitation",
-                    "topic_role": "primary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="compressive strength",
-                attributes={
-                    "topic": "materials performance",
-                    "topic_role": "secondary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="chunk_topic",
-                extraction_text="blending RCA with virgin aggregate",
-                attributes={
-                    "topic": "RCA concrete mix design",
-                    "topic_role": "secondary",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="RCA",
-                attributes={
-                    "term": "RCA",
-                    "normalized_term": "recycled concrete aggregate",
-                    "term_category": "material",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="falling weight deflectometer",
-                attributes={
-                    "term": "falling weight deflectometer",
-                    "normalized_term": "falling weight deflectometer",
-                    "term_category": "test_method",
-                },
-            ),
-            lx.data.Extraction(
-                extraction_class="pavement_engineering_term",
-                extraction_text="ultrathin whitetopping",
-                attributes={
-                    "term": "ultrathin whitetopping",
-                    "normalized_term": "ultrathin whitetopping",
-                    "term_category": "construction",
-                },
-            ),
-        ],
-    ),
-]
-
-
 @dataclass
 class LXConfig:
     model: str = "gpt-4o-mini"
     api_key: str | None = None
     temperature: float = 0.0
-    extraction_passes: int = 2                # span-level recall passes
-    chunk_extraction_passes: int = 1          # chunk-level passes (deterministic)
+    extraction_passes: int = 2                              # span-level recall passes
     max_char_buffer: int = 10000
-    prompt_name_span: str = "nemo_logic-artifacts-03-span"
-    prompt_name_chunk: str = "nemo_logic-artifacts-03-chunk"
+    prompt_name: str = "nemo_logic-artifacts-04-span"        # span-level (langextract)
+    chunk_prompt_name: str = "nemo_logic-artifacts-04-chunk" # chunk-level (OpenAI Structured Outputs)
     prompt_lib: str = "./prompts"
 
 
-class PavementExtractor:
+class ChunkLevelExtractor:
+    """Direct OpenAI Structured Outputs call producing a ChunkSignals object per chunk.
+
+    Quantity rules are soft-validated post-receipt: cap topics at 5; log if 0 or > 5.
+    """
+
     def __init__(self, cfg: LXConfig):
         self.cfg: LXConfig = cfg
         api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY not set (env or [langextract].api_key in cfg)"
+                "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
+            )
+        prompt_path: Path = Path(cfg.prompt_lib) / f"{cfg.chunk_prompt_name}.txt"
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Chunk prompt not found: {prompt_path}")
+        self.system_prompt: str = prompt_path.read_text(encoding="utf-8")
+        self.client: OpenAI = OpenAI(api_key=api_key)
+
+    def extract(self, text: str, doc_id: str, chunk_id: int) -> ChunkSignals:
+        completion = self.client.beta.chat.completions.parse(
+            model=self.cfg.model,
+            temperature=self.cfg.temperature,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": text},
+            ],
+            response_format=ChunkSignals,
+        )
+        signals: ChunkSignals | None = completion.choices[0].message.parsed
+        if signals is None:
+            raise RuntimeError(
+                f"OpenAI returned no parsed ChunkSignals "
+                f"(refusal: {completion.choices[0].message.refusal!r})"
+            )
+        # Soft validation of topics quantity rule (1-5 expected).
+        n_topics: int = len(signals.topics)
+        if n_topics == 0:
+            logger.log(
+                "NLP",
+                f"{doc_id} chunk {chunk_id}: 0 chunk topics emitted (expected 1-5)",
+            )
+        elif n_topics > 5:
+            logger.log(
+                "NLP",
+                f"{doc_id} chunk {chunk_id}: {n_topics} chunk topics emitted; capping to first 5",
+            )
+            signals.topics = signals.topics[:5]
+        return signals
+
+
+class PavementExtractor:
+    """Per-chunk orchestrator. Span-level via langextract; chunk-level via ChunkLevelExtractor.
+
+    Each call is independently failure-isolated: span exceptions populate errors['span'] and
+    leave extractions={}; chunk exceptions populate errors['chunk'] and leave chunk_signals=None.
+    """
+
+    def __init__(self, cfg: LXConfig):
+        self.cfg: LXConfig = cfg
+        api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
             )
         self.api_key: str = api_key
-        span_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name_span}.txt"
-        chunk_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name_chunk}.txt"
-        missing: list[str] = [str(p) for p in (span_path, chunk_path) if not p.exists()]
-        if missing:
-            raise FileNotFoundError(f"Prompt(s) not found: {missing}")
-        self.prompt_span: str = span_path.read_text(encoding="utf-8")
-        self.prompt_chunk: str = chunk_path.read_text(encoding="utf-8")
+        prompt_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name}.txt"
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Span prompt not found: {prompt_path}")
+        self.prompt_span: str = prompt_path.read_text(encoding="utf-8")
+        self.chunk_extractor: ChunkLevelExtractor = ChunkLevelExtractor(cfg)
 
     def _char_iv(self, ext) -> dict | None:
         ci = ext.char_interval
@@ -727,9 +660,8 @@ class PavementExtractor:
             else None
         )
 
-    def extract(self, text: str, doc_id: str, chunk_id: int) -> dict[str, list[dict]]:
-        # Span-level call: 21 classes, v2 prompt body, recall passes.
-        span_result = lx.extract(
+    def _extract_spans(self, text: str, doc_id: str, chunk_id: int) -> dict[str, list[dict]]:
+        result = lx.extract(
             text_or_documents=text,
             prompt_description=self.prompt_span,
             examples=SPAN_LEVEL_EXAMPLES,
@@ -740,22 +672,9 @@ class PavementExtractor:
             max_char_buffer=self.cfg.max_char_buffer,
             show_progress=False,
         )
-        # Chunk-level call: 3 classes, dedicated prompt, deterministic passes.
-        chunk_result = lx.extract(
-            text_or_documents=text,
-            prompt_description=self.prompt_chunk,
-            examples=CHUNK_LEVEL_EXAMPLES,
-            model_id=self.cfg.model,
-            api_key=self.api_key,
-            temperature=self.cfg.temperature,
-            extraction_passes=self.cfg.chunk_extraction_passes,
-            max_char_buffer=self.cfg.max_char_buffer,
-            show_progress=False,
-        )
         bucketed: dict[str, list[dict]] = {}
         ext_idx: int = 0
-        # Span-level: gate against SPAN_LEVEL_CLASSES; promote description/significance.
-        for ext in (span_result.extractions or []):
+        for ext in (result.extractions or []):
             cls: str = ext.extraction_class
             if cls not in SPAN_LEVEL_CLASSES:
                 logger.log(
@@ -776,24 +695,45 @@ class PavementExtractor:
             }
             bucketed.setdefault(cls, []).append(entry)
             ext_idx += 1
-        # Chunk-level: gate against CHUNK_LEVEL_CLASSES; bypass description/significance promotion.
-        for ext in (chunk_result.extractions or []):
-            cls = ext.extraction_class
-            if cls not in CHUNK_LEVEL_CLASSES:
-                logger.log(
-                    "NLP",
-                    f"{doc_id} chunk {chunk_id}: chunk call dropped class {cls!r}",
-                )
-                continue
-            entry = {
-                "artifact_id": f"{doc_id}_chunk_{chunk_id}_art_{ext_idx}",
-                "text": ext.extraction_text,
-                "char_interval": self._char_iv(ext),
-                "attributes": dict(ext.attributes or {}),
-            }
-            bucketed.setdefault(cls, []).append(entry)
-            ext_idx += 1
         return bucketed
+
+    def extract(self, text: str, doc_id: str, chunk_id: int) -> dict:
+        """Returns {extractions, chunk_signals, errors}.
+
+        - extractions: dict[str, list[dict]]; span-level only, gated by SPAN_LEVEL_CLASSES.
+        - chunk_signals: ChunkSignals.model_dump() or None on chunk-call failure.
+        - errors: dict with keys 'span' and 'chunk'; each null on success or str(exc) on failure.
+        """
+        extractions: dict[str, list[dict]] = {}
+        chunk_signals: dict | None = None
+        errors: dict[str, str | None] = {"span": None, "chunk": None}
+
+        # Span-level call (langextract; v3 transformation logic preserved).
+        try:
+            extractions = self._extract_spans(text, doc_id, chunk_id)
+        except Exception as exc:
+            logger.log(
+                "NLP",
+                f"{doc_id} chunk {chunk_id}: span extraction failed: {exc}",
+            )
+            errors["span"] = str(exc)
+
+        # Chunk-level call (OpenAI Structured Outputs).
+        try:
+            signals: ChunkSignals = self.chunk_extractor.extract(text, doc_id, chunk_id)
+            chunk_signals = signals.model_dump()
+        except Exception as exc:
+            logger.log(
+                "NLP",
+                f"{doc_id} chunk {chunk_id}: chunk-signals extraction failed: {exc}",
+            )
+            errors["chunk"] = str(exc)
+
+        return {
+            "extractions": extractions,
+            "chunk_signals": chunk_signals,
+            "errors": errors,
+        }
 
 
 def _read_json(path: Path) -> dict:
@@ -843,6 +783,11 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         raise ValueError(
             f"extract_artifacts requires [chunking].method == 'random_logical'; got {method!r}"
         )
+    if "artifact_extraction" not in cfg and "langextract" in cfg:
+        raise KeyError(
+            "config has [langextract] but expects [artifact_extraction] (v3 → v4 rename). "
+            "Update extract_artifacts.toml accordingly."
+        )
     chunk_dir: Path = _resolve_input_dir(cfg)
     if not chunk_dir.exists():
         logger.log("NLP", f"Chunk dir not found: {chunk_dir}; nothing to do")
@@ -853,7 +798,7 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         logger.log("NLP", f"No *-logic-chunks.json under {chunk_dir}; nothing to do")
         return
 
-    lx_cfg: LXConfig = LXConfig(**cfg.get("langextract", {}))
+    lx_cfg: LXConfig = LXConfig(**cfg.get("artifact_extraction", {}))
     extractor: PavementExtractor = PavementExtractor(lx_cfg)
 
     for chunks_path in logic_chunk_files:
@@ -871,26 +816,16 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         for chunk in texts:
             chunk_id: int = chunk.get("chunk_id")
             tokens: int = chunk.get("tokens", 0)
-            try:
-                extractions: dict = extractor.extract(
-                    text=chunk["text"], doc_id=doc_id, chunk_id=chunk_id
-                )
-                artifacts.append({
-                    "chunk_id": chunk_id,
-                    "tokens": tokens,
-                    "extractions": extractions,
-                })
-            except Exception as exc:
-                logger.log(
-                    "NLP",
-                    f"{doc_id} chunk {chunk_id}: extraction failed: {exc}",
-                )
-                artifacts.append({
-                    "chunk_id": chunk_id,
-                    "tokens": tokens,
-                    "extractions": {},
-                    "error": str(exc),
-                })
+            result: dict = extractor.extract(
+                text=chunk["text"], doc_id=doc_id, chunk_id=chunk_id
+            )
+            artifacts.append({
+                "chunk_id": chunk_id,
+                "tokens": tokens,
+                "extractions": result["extractions"],
+                "chunk_signals": result["chunk_signals"],
+                "errors": result["errors"],
+            })
 
         _write_json({"doc_id": doc_id, "artifacts": artifacts}, out_path)
         logger.log(
