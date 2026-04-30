@@ -1,7 +1,7 @@
 # GENERAL SETTINGS
 [general]
-output_dir = "./data/_test/chunk_test-random-logic2"#"./data/nemo_briefs_20260422"
-data_dir = "./small_corpus/parsed-techbriefs"#"./rawdata/parsed-techbriefs"
+output_dir = "./data/_test/chunk_test-random-logic2"#"./data/nemo_briefs_20260429"#"./data/_test/chunk_test-random-logic2"#"./data/nemo_briefs_20260422"
+data_dir = "./small_corpus/parsed-techbriefs"#"./rawdata/parsed-techbriefs"#"./small_corpus/parsed-techbriefs"#"./rawdata/parsed-techbriefs"
 metadata_folder = "./rawdata-pub242/metadata"
 [general.theme]
 cmap = "gist_rainbow"

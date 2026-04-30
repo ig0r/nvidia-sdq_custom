@@ -81,16 +81,16 @@ The warning is informational — Step 1 passes oversized bundles through.
 
 ---
 
-## `extract_artifacts.py` (logical-chunk flow, Step 2 — standalone)
+## `extract_artifacts.py` (logical-context flow, Step 2 — standalone)
 
-Standalone script that reads each `{doc_id}-logic-chunks.json`, sends every logical chunk through Google's [`langextract`](https://github.com/google/langextract) library backed by OpenAI `gpt-4o-mini`, and writes `{doc_id}-logic-artifacts.json` next to it. Lives outside `_nemo.py` because Steps 2–4 of the mode-3 flow have shapes that genuinely differ from the bundled `--sdg` pipeline (per-chunk extraction, single-segment QA, no multi-hop framing).
+Standalone script that reads each `{doc_id}-logic-ctx.json` (one entry per *context*, each wrapping one or more logical chunks), runs span-level extraction via Google's [`langextract`](https://github.com/google/langextract) plus chunk-level extraction via OpenAI Structured Outputs, and writes `{doc_id}-logic-artifacts.json` next to it. The context's text is the join of `chunks[*].text` with `"\n\n"` — same formula as `generate-qa.py::build_context_text`, so the two stages share a single source of truth for the iteration unit and the text frame. Each output record is keyed by `u_ctx_id`. Lives outside `_nemo.py` because Steps 2–4 of the mode-3 flow have shapes that differ from the bundled `--sdg` pipeline.
 
 ### Prerequisites
 
 - `[chunking].method = "random_logical"` (the script exits with a clear error otherwise).
-- `OPENAI_API_KEY` set in `.env` or the environment (the script fails fast at startup if missing).
-- `langextract` installed (`pip install -r reqs.txt`; pinned to `langextract==1.2.1`).
-- `*-logic-chunks.json` files already present under `{output_dir}/doc-chunks_{chunk_size}_random_logical/` — typically produced by `--chunk-only` or `--sdg-logical` first.
+- `OPENAI_API_KEY` set in `.env` or the environment (fails fast at startup if missing).
+- `langextract`, `openai`, `pydantic` installed (`pip install -r reqs.txt`; pinned in `reqs.txt`).
+- `*-logic-ctx.json` files already present under `{output_dir}/doc-chunks_{chunk_size}_random_logical/` — produced by `_nemo.py --sdg-logical` (typically chained: `--chunk-only --sdg-logical`). The script does NOT fall back to deriving contexts from `-logic-chunks.json`; if no `*-logic-ctx.json` is found, it logs `"NLP"` and exits cleanly.
 
 ### Invocations
 
@@ -170,21 +170,26 @@ Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title
 
 ### Output schema
 
-`-logic-artifacts.json` wraps a per-chunk artifacts list with the document id. Each per-chunk record carries `extractions` (span-level, class-bucketed), `chunk_signals` (the structured chunk-level object — or `null` on chunk-call failure), and `errors` (always present, dict with `span` and `chunk` keys).
+`-logic-artifacts.json` wraps a **per-context** artifacts list with the document id. Each record is keyed by `u_ctx_id` (matching the corresponding entry in `-logic-ctx.json`) and carries `extractions` (span-level, class-bucketed), `chunk_signals` (the structured chunk-level object — or `null` on chunk-call failure), and `errors` (always present, dict with `span` and `chunk` keys).
 
-Span-level entries each carry an `artifact_id` of the form `{doc_id}_chunk_{chunk_id}_art_{idx}`. Chunk-level signal items (topics, terms) do **not** carry `artifact_id` — they're identified by `chunk_id` plus their position in the list.
+Span-level entries each carry an `artifact_id` of the form `{doc_id}_chunk_{chunk_id}_art_{idx}` and a canonical `u_artifact_id` of `{u_ctx_id}-art-{idx}`. Chunk-level signal items (topics, terms) do **not** carry `artifact_id` — they're identified by their position in the list.
+
+Provenance to recursive (pre-logical) chunks is reachable via join: an artifact's `u_ctx_id` matches the corresponding context in `-logic-ctx.json`, whose `chunks[*].source_u_chunk_ids` carries the recursive-chunk ids. The artifact record does NOT denormalize this — it's normalized in the sidecar.
 
 ```json
 {
   "doc_id": "TBF000027_UKN000",
   "artifacts": [
     {
+      "u_ctx_id": "TBF000027_UKN000-ctx-0",
+      "u_logic_chunk_id": "TBF000027_UKN000-logic-chunk-0",
       "chunk_id": 0,
       "tokens": 457,
       "extractions": {
         "requirement": [
           {
             "artifact_id": "TBF000027_UKN000_chunk_0_art_0",
+            "u_artifact_id": "TBF000027_UKN000-ctx-0-art-0",
             "text": "separate pavement design analyses shall be prepared",
             "description": "requirement to prepare separate pavement design analyses",
             "significance": null,
@@ -219,6 +224,8 @@ Span-level entries each carry an `artifact_id` of the form `{doc_id}_chunk_{chun
       "errors": {"span": null, "chunk": null}
     },
     {
+      "u_ctx_id": "TBF000027_UKN000-ctx-1",
+      "u_logic_chunk_id": "TBF000027_UKN000-logic-chunk-1",
       "chunk_id": 1,
       "tokens": 198,
       "extractions": {},
@@ -235,7 +242,7 @@ Span-level entries each carry an `artifact_id` of the form `{doc_id}_chunk_{chun
 
 `errors` is always a dict with exactly the keys `span` and `chunk`. Each value is `null` on success or the exception's `str()` value on failure. The two calls fail independently: `extractions = {}` with `errors.span` populated indicates a span-call failure; `chunk_signals = null` with `errors.chunk` populated indicates a chunk-call failure; both can be true at once.
 
-This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) the new `chunk_signals` field with a structured (not class-bucketed) shape. Inside the standalone flow this is a v1→v2→v3→v4 progression: v1 had `description`/`significance` inside `attributes`; v2 promoted them to top level; v3 added 3 chunk-level langextract classes inside `extractions`; v4 moves chunk-level off langextract into the `chunk_signals` field. Operators with cached v1 / v2 / v3 `-logic-artifacts.json` files should re-run with `--overwrite`.
+This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) the new `chunk_signals` field with a structured (not class-bucketed) shape. Inside the standalone flow this is a v1→v2→v3→v4→v5→v6 progression: v1 had `description`/`significance` inside `attributes`; v2 promoted them to top level; v3 added 3 chunk-level langextract classes inside `extractions`; v4 moved chunk-level off langextract into the `chunk_signals` field; v5 added threaded concurrency; v6 switched the iteration unit from per-chunk (reading `*-logic-chunks.json`) to per-context (reading `*-logic-ctx.json`), aligning with `generate-qa.py`. Operators with cached v1–v5 `-logic-artifacts.json` files should re-run with `--overwrite`.
 
 ### Configuration
 

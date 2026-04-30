@@ -277,7 +277,19 @@ def iter_doc_pairs(chunk_dir: str) -> list[tuple[str, str, str]]:
 
     pairs: list[tuple[str, str, str]] = []
     for ctx_path in sorted(base.glob(f"*{CTX_SUFFIX}")):
-        doc_id = ctx_path.name[: -len(CTX_SUFFIX)]
+        # The ctx file's top-level "doc_id" field is the authoritative identifier
+        # written by `_nemo.py::_build_logical_contexts`. Trust it; fall back to
+        # filename derivation only if missing/empty. Soft-warn on mismatch — usually
+        # signals a rename or relocation drift.
+        ctx_data = load_json(str(ctx_path))
+        filename_id = ctx_path.name[: -len(CTX_SUFFIX)]
+        json_id = (ctx_data.get("doc_id") or "").strip() if isinstance(ctx_data, dict) else ""
+        doc_id = json_id or filename_id
+        if json_id and json_id != filename_id:
+            logger.warning(
+                f"{ctx_path}: doc_id mismatch — JSON says {json_id!r}, "
+                f"filename derives {filename_id!r}; using JSON field"
+            )
         art_path = base / f"{doc_id}{ART_SUFFIX}"
         if not art_path.exists():
             logger.warning(f"Missing artifacts file for {doc_id}: {art_path}")
@@ -369,6 +381,16 @@ def build_tasks(
     for doc_id, ctx_path, art_path in iter_doc_pairs(chunk_dir):
         ctx_data = load_json(ctx_path)
         art_data = load_json(art_path)
+
+        # Cross-check: artifacts file's top-level doc_id (written by
+        # extract_artifacts.py v6+) should match the resolved doc_id. Soft-warn
+        # on mismatch — usually signals a rename or stale cache.
+        art_doc_id = (art_data.get("doc_id") or "").strip() if isinstance(art_data, dict) else ""
+        if art_doc_id and art_doc_id != doc_id:
+            logger.warning(
+                f"{art_path}: doc_id mismatch — artifacts file says {art_doc_id!r}, "
+                f"expected {doc_id!r} (from ctx file); proceeding with ctx doc_id"
+            )
 
         # Index artifact entries by u_ctx_id
         art_by_ctx: dict[str, dict] = {}

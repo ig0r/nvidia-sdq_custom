@@ -117,6 +117,8 @@ Identical to v4: Python 3.11+ (venv at 3.12), `langextract==1.2.1`, `openai==1.9
 ### NFR-1 Backward compatibility
 v4 `-logic-artifacts.json` files SHALL remain valid v5 outputs (shape unchanged). The script SHALL skip-write existing v4 outputs under v5 idempotency. Operators force-regenerate via `--overwrite` only if they want fresh runs.
 
+**Note (v6 supersedes):** v6 (`plans/srs-extract-artifacts-v6-context-driven.md`) reorders the per-record key set to put `u_ctx_id` first and switches the primary input from `*-logic-chunks.json` to `*-logic-ctx.json`. v5's per-chunk wrapper shape is preserved at the field-set level but the iteration unit and primary key change.
+
 ### NFR-2 Determinism
 With `temperature=0.0`, repeated runs SHOULD produce identical output modulo OpenAI's internal nondeterminism (unchanged from v4). Chunk-order within each doc is preserved (FR-5.3). Span `ext_idx` numbering is per-chunk-local (unchanged). v5 introduces NO new nondeterminism beyond what v4 already accepts.
 

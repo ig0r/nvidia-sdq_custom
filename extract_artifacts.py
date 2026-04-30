@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Standalone CLI: extract pavement-engineering artifacts from mode-3 logical chunks.
+"""Standalone CLI: extract pavement-engineering artifacts from logical contexts.
 
-Reads {output_dir}/doc-chunks_{size}_random_logical/*-logic-chunks.json. Per chunk it
-runs two extraction calls and writes both into *-logic-artifacts.json:
+Reads {output_dir}/doc-chunks_{size}_random_logical/*-logic-ctx.json (produced by
+`_nemo.py --sdg-logical`). Per context it runs two extraction calls and writes
+both into *-logic-artifacts.json:
 - Span-level (langextract → gpt-4o-mini): 21-class normative taxonomy with verbatim spans.
 - Chunk-level (OpenAI Structured Outputs → gpt-4o-mini): a single Pydantic-validated
   ChunkSignals object (summary + 1-5 topics + 0+ pavement_engineering_terms).
 
+The context's text is the join of `chunks[*].text` with `"\\n\\n"` — same formula
+as `generate-qa.py::build_context_text`. Each output record is keyed by `u_ctx_id`.
+For 1:1 contexts (current `_build_logical_contexts` behavior) this is byte-equivalent
+to a per-chunk run modulo model nondeterminism.
+
 Requires:
 - [chunking].method == 'random_logical' in the cfg TOML.
+- *-logic-ctx.json must exist per doc (run `_nemo.py --sdg-logical` first).
 - OPENAI_API_KEY in env or .env.
 - pip install langextract openai pydantic loguru python-dotenv
 
@@ -763,7 +770,7 @@ def _write_json(data: dict, path: Path) -> None:
 
 
 def _resolve_input_dir(cfg: dict) -> Path:
-    """Return the directory holding *-logic-chunks.json. Prefers [paths].input_dir
+    """Return the directory holding *-logic-ctx.json. Prefers [paths].input_dir
     (extract_artifacts.toml). For cfg/nemo.toml shape, falls back to globbing
     {[general].output_dir}/doc-chunks_*_random_logical/ and accepting the single
     match — errors if zero or multiple."""
@@ -809,76 +816,92 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         logger.log("NLP", f"Chunk dir not found: {chunk_dir}; nothing to do")
         return
 
-    logic_chunk_files: list[Path] = sorted(chunk_dir.glob("*-logic-chunks.json"))
-    if not logic_chunk_files:
-        logger.log("NLP", f"No *-logic-chunks.json under {chunk_dir}; nothing to do")
+    ctx_files: list[Path] = sorted(chunk_dir.glob("*-logic-ctx.json"))
+    if not ctx_files:
+        logger.log(
+            "NLP",
+            f"No *-logic-ctx.json under {chunk_dir}; nothing to do "
+            f"(run `_nemo.py --sdg-logical` first to produce them)",
+        )
         return
 
     lx_cfg: LXConfig = LXConfig(**cfg.get("artifact_extraction", {}))
     extractor: PavementExtractor = PavementExtractor(lx_cfg)
 
-    for chunks_path in logic_chunk_files:
-        doc_id: str = chunks_path.name.replace("-logic-chunks.json", "")
-        out_path: Path = chunks_path.with_name(f"{doc_id}-logic-artifacts.json")
+    for ctx_path in ctx_files:
+        ctx_doc: dict = _read_json(ctx_path)
+        # The producer (`_nemo.py::_build_logical_contexts`) writes the canonical
+        # doc_id into the JSON. Treat the JSON field as the authority; fall back
+        # to filename derivation only if missing/empty. Soft-warn on mismatch
+        # (usually a rename/relocation drift signal).
+        filename_id: str = ctx_path.name.replace("-logic-ctx.json", "")
+        json_id: str = ctx_doc.get("doc_id") or ""
+        doc_id: str = json_id or filename_id
+        if json_id and json_id != filename_id:
+            logger.log(
+                "NLP",
+                f"{ctx_path}: doc_id mismatch — JSON says {json_id!r}, "
+                f"filename derives {filename_id!r}; using JSON field",
+            )
+        out_path: Path = ctx_path.with_name(f"{doc_id}-logic-artifacts.json")
 
         if out_path.exists() and not overwrite:
             logger.log("CHUNK", f"{doc_id}: cache hit -> {out_path}")
             continue
 
-        chunks_doc: dict = _read_json(chunks_path)
-        texts: list[dict] = chunks_doc.get("texts", [])
+        contexts: list[dict] = ctx_doc.get("contexts", [])
 
-        # Load -logic-ctx.json (if present) to map logic chunk_id -> u_ctx_id.
-        # Built robust to N:1 (multiple logic chunks per context) — a logic chunk
-        # appearing in multiple contexts gets the last one's u_ctx_id.
-        ctx_path: Path = chunks_path.with_name(f"{doc_id}-logic-ctx.json")
-        chunk_id_to_uctx: dict[int, str] = {}
-        if ctx_path.exists():
-            ctx_doc: dict = _read_json(ctx_path)
-            for ctx_entry in ctx_doc.get("contexts", []):
-                u_ctx_id: str = ctx_entry.get("u_ctx_id", "")
-                for ch in ctx_entry.get("chunks", []):
-                    cid = ch.get("chunk_id")
-                    if cid is not None and u_ctx_id:
-                        chunk_id_to_uctx[cid] = u_ctx_id
-        else:
-            logger.log(
-                "CHUNK",
-                f"{doc_id}: -logic-ctx.json not found at {ctx_path}; "
-                f"falling back to 1:1 ctx_id derivation",
-            )
-
-        def _u_ctx_for(cid: int) -> str:
-            return chunk_id_to_uctx.get(cid, f"{doc_id}-ctx-{cid}")
-
-        # v5: process chunks concurrently within a doc; preserve chunk_id order
-        # by iterating the futures list in submission order (not as_completed).
+        # v6: iterate contexts (not chunks). Build per-context text via the
+        # same formula as generate-qa.py::build_context_text. Chunks within a
+        # context are joined with "\n\n" — for 1:1 contexts (current state) this
+        # is identical to the chunk's own text. Order preserved by iterating the
+        # futures list in submission order (matches v5 ordering invariant).
         artifacts: list[dict] = []
         with ThreadPoolExecutor(
             max_workers=lx_cfg.chunk_concurrency,
             thread_name_prefix=doc_id,
         ) as pool:
-            futures = [
-                (
-                    chunk["chunk_id"],
-                    chunk.get("tokens", 0),
-                    _u_ctx_for(chunk["chunk_id"]),
+            futures: list[tuple] = []
+            for ctx_entry in contexts:
+                u_ctx_id: str = ctx_entry.get("u_ctx_id", "")
+                chunks: list[dict] = ctx_entry.get("chunks", [])
+                if not chunks:
+                    logger.log(
+                        "NLP",
+                        f"{doc_id}: empty context {u_ctx_id!r}; skipping",
+                    )
+                    continue
+                text: str = "\n\n".join(
+                    c.get("text", "") for c in chunks if c.get("text")
+                ).strip()
+                if not text:
+                    logger.log(
+                        "NLP",
+                        f"{doc_id}: empty context {u_ctx_id!r}; skipping",
+                    )
+                    continue
+                chunk_id: int = chunks[0].get("chunk_id", -1)
+                u_logic_chunk_id: str = chunks[0].get("u_logic_chunk_id", "")
+                tokens: int = ctx_entry.get("tokens", 0)
+                futures.append((
+                    u_ctx_id,
+                    u_logic_chunk_id,
+                    chunk_id,
+                    tokens,
                     pool.submit(
                         extractor.extract,
-                        chunk["text"],
+                        text,
                         doc_id,
-                        chunk["chunk_id"],
-                        _u_ctx_for(chunk["chunk_id"]),
+                        chunk_id,
+                        u_ctx_id,
                     ),
-                )
-                for chunk in texts
-            ]
-            for chunk_id, tokens, u_ctx_id, fut in futures:
+                ))
+            for u_ctx_id, u_logic_chunk_id, chunk_id, tokens, fut in futures:
                 result: dict = fut.result()
                 artifacts.append({
-                    "chunk_id": chunk_id,
-                    "u_logic_chunk_id": f"{doc_id}-logic-chunk-{chunk_id}",
                     "u_ctx_id": u_ctx_id,
+                    "u_logic_chunk_id": u_logic_chunk_id,
+                    "chunk_id": chunk_id,
                     "tokens": tokens,
                     "extractions": result["extractions"],
                     "chunk_signals": result["chunk_signals"],
@@ -888,7 +911,7 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         _write_json({"doc_id": doc_id, "artifacts": artifacts}, out_path)
         logger.log(
             "CHUNK",
-            f"{doc_id}: extracted artifacts from {len(artifacts)} logical chunks -> {out_path}",
+            f"{doc_id}: extracted artifacts from {len(artifacts)} contexts -> {out_path}",
         )
 
 
@@ -900,7 +923,7 @@ if __name__ == "__main__":
                         help="Path to TOML config (default: ./extract_artifacts.toml). "
                              "Also accepts cfg/nemo.toml.")
     parser.add_argument("--input_dir", type=str,
-                        help="Override the directory containing *-logic-chunks.json")
+                        help="Override the directory containing *-logic-ctx.json")
     parser.add_argument("--overwrite", action="store_true",
                         help="Force regeneration of cached -logic-artifacts.json")
     args = parser.parse_args()
