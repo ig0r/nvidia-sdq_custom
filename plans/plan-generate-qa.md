@@ -97,7 +97,6 @@ Symbol replacement (when `replace_symbols = true`) is applied to the context tex
   "question_id": "{u_ctx_id}-q-{n}",
   "question": "...",
   "answer": "...",
-  "citation": "...",
   "full_citation": {"citation": "...", "first_sentence": "...", "last_sentence": "..."},
   "question_type": "factual|conceptual|application|analysis",
   "question_difficulty": "basic|intermediate",
@@ -115,7 +114,9 @@ Symbol replacement (when `replace_symbols = true`) is applied to the context tex
 }
 ```
 
-The CSV output (`generated-questions.csv`) flattens this list into rows, stringifying `source_u_chunk_ids` and `artifact` for spreadsheet legibility. The internal `citation_extracted` flag is dropped from the final JSON/CSV.
+The CSV output (`generated-questions.csv`) flattens this list into rows, stringifying `source_u_chunk_ids` and `artifact` for spreadsheet legibility; its `citation` column is sourced from `full_citation.citation`. The internal `citation_extracted` flag is dropped from the final JSON/CSV.
+
+**Citation field shape.** The verbatim citation string lives at `full_citation.citation`; there is no top-level `citation` field. `full_citation` also carries `first_sentence` and `last_sentence` (currently unused by any consumer, but preserved for future citation-alignment / validation tooling).
 
 ## Output ordering
 

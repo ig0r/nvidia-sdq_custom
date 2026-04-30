@@ -112,7 +112,7 @@ Step 2 (`extract_artifacts.py`) writes one `*-logic-artifacts.json` per doc, car
 **FR-3.3** When `replace_symbols = true`, the context text SHALL be passed through `replace_symbols` before substitution.
 **FR-3.4** The substituted prompt SHALL be sent to the provider per FR-9 with `temperature = 0.0`.
 **FR-3.5** Each task SHALL retry up to 5 times on generic exceptions; `ResourceExhausted` (Gemini quota) SHALL raise `SystemExit` immediately.
-**FR-3.6** Each generated question SHALL be packaged into a dict with: TEMP-`question_id`, `question`, `answer`, `citation = None`, `full_citation = None`, `question_type`, `question_difficulty`, `question_element_type = task.artifact_category`, `doc_id`, `u_ctx_id`, `u_logic_chunk_id`, `source_u_chunk_ids`, `artifact_id`, `u_artifact_id`, `artifact`, `context_text`, `model_qa = model`, `model_citation = None`, `citation_extracted = False`.
+**FR-3.6** Each generated question SHALL be packaged into a dict with: TEMP-`question_id`, `question`, `answer`, `full_citation = None`, `question_type`, `question_difficulty`, `question_element_type = task.artifact_category`, `doc_id`, `u_ctx_id`, `u_logic_chunk_id`, `source_u_chunk_ids`, `artifact_id`, `u_artifact_id`, `artifact`, `context_text`, `model_qa = model`, `model_citation = None`, `citation_extracted = False`. The verbatim citation string lives under `full_citation.citation` once Phase 2 fills it in; there is no top-level `citation` field.
 **FR-3.7** Phase 1 SHALL save the running `all_questions` list to `<output_dir>/<output_qa_file>` every `periodic_save_interval_qa` completed tasks and once at the end of the phase.
 
 ### FR-4 Phase 2 — Citation extraction
@@ -302,7 +302,6 @@ Per-question JSON shape (final file):
   "question_id": "TBF000011_UKN000-ctx-0-q-0",
   "question": "What is whitetopping in pavement engineering?",
   "answer": "...",
-  "citation": "...",
   "full_citation": {"citation": "...", "first_sentence": "...", "last_sentence": "..."},
   "question_type": "factual",
   "question_difficulty": "basic",
@@ -336,7 +335,7 @@ CSV file shape: `pandas_index, question_number, question_id, question, answer, c
 - **AC-1** Running `generate-qa.py` against a chunk directory containing one `*-logic-ctx.json` and one `*-logic-artifacts.json` per doc produces `generated-questions.json`, `generated-questions.csv`, `generated-questions_qa_only.json`, `generated-questions_with_citations.json` under `output_dir`.
 - **AC-2** A pair missing the artifacts file produces a `WARNING` log and is skipped; the run continues for the remaining pairs.
 - **AC-3** Task count math: for one ctx with N artifacts in the configured categories and `include_summary_element = true`, `build_tasks` yields exactly `min(N, max_artifacts_per_ctx) + 1` tasks (the `+1` is omitted if `chunk_signals.summary.summary` is empty).
-- **AC-4** Each per-question record in `generated-questions.json` has the 19 keys listed in §5.4 and no `citation_extracted` key.
+- **AC-4** Each per-question record in `generated-questions.json` has the 17 keys listed in §5.4 (no top-level `citation`; the verbatim citation string lives under `full_citation.citation`) and no `citation_extracted` key.
 - **AC-5** Within `generated-questions.json`, the question-list order satisfies `keys == sorted(keys)` where `keys = [(natural_key(doc_id), natural_key(u_ctx_id), natural_key(artifact_id))]`. (Verifiable by the assertion in `plans/plan-generate-qa.md` §Verification.)
 - **AC-6** Within each `u_ctx_id`, the suffix integer of `question_id` (after the last `-q-`) increments from 0 with no gaps.
 - **AC-7** Re-running with both intermediate files present skips both phases (zero LLM calls; sub-second wall time).
@@ -369,3 +368,4 @@ CSV file shape: `pandas_index, question_number, question_id, question, answer, c
 - **OQ-4** Cost estimator: a tiktoken-based per-call accountant matching the gap noted in `srs-extract-artifacts-v4-chunk-signals.md`.
 - **OQ-5** Verbatim-citation enforcement: a Phase 3 validator could re-extract citations whose first run failed `citation in context_text`, with an iteration cap. Defer until paraphrase rate is measured on a larger run.
 - **OQ-6** `docs/qa-generation.md` update: append a "Step 3 (`generate-qa.py`)" section paralleling the existing Step 1 / Step 2 sections. Defer until the operator-facing documentation pass is scheduled.
+- **OQ-7** Top-level `citation` was dropped in favour of `full_citation.citation` to remove redundancy and preserve `first_sentence` / `last_sentence` for future citation-alignment tooling. If those two sentence fields remain unused after Step 4 lands, consider Option C (drop `full_citation` entirely, restore top-level `citation`) and simplify the citation prompt to ask for only one field.

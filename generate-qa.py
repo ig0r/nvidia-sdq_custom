@@ -512,7 +512,6 @@ async def generate_qa_for_task_async(
                     "question_id": f"TEMP-{task.u_ctx_id}-{task.artifact_id}-{q_idx}",
                     "question": q.question,
                     "answer": q.answer,
-                    "citation": None,
                     "full_citation": None,
                     "question_type": q.question_type.value if hasattr(q.question_type, "value") else str(q.question_type),
                     "question_difficulty": q.difficulty.value if hasattr(q.difficulty, "value") else str(q.difficulty),
@@ -671,7 +670,6 @@ async def run_phase2(
             for q in questions:
                 qid = q.get("question_id")
                 if qid in citations_map:
-                    q["citation"] = citations_map[qid]["citation"]
                     q["full_citation"] = citations_map[qid]["full_citation"]
                     q["citation_extracted"] = True
                     q["model_citation"] = citations_map[qid].get("model_citation", model)
@@ -692,7 +690,6 @@ async def run_phase2(
             citation = await extract_citation_for_question_async(
                 q["question"], q.get("context_text", ""), template, client, model, symbol_cfg
             )
-            q["citation"] = citation.citation
             q["full_citation"] = citation.model_dump()
             q["citation_extracted"] = True
             q["model_citation"] = model
@@ -726,7 +723,7 @@ def save_questions_to_csv(questions: list[dict], path: str) -> None:
             "question_id": q.get("question_id", ""),
             "question": q.get("question", ""),
             "answer": q.get("answer", ""),
-            "citation": q.get("citation", ""),
+            "citation": (q.get("full_citation") or {}).get("citation", ""),
             "question_type": q.get("question_type", ""),
             "question_element_type": q.get("question_element_type", ""),
             "question_difficulty": q.get("question_difficulty", ""),
@@ -897,6 +894,7 @@ def main():
         q["question_id"] = f"{ctx_id}-q-{counters[ctx_id]}"
         counters[ctx_id] += 1
         q.pop("citation_extracted", None)
+        q.pop("citation", None)  # strip legacy top-level field from old intermediates
 
     out_path = os.path.join(output_dir, output_file)
     save_to_json(all_questions, out_path)
