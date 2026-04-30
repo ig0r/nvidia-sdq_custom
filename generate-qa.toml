@@ -25,8 +25,8 @@ model_citations = "gpt-4o-mini"
 # Concurrency / periodic save
 max_concurrent_qa = 20
 max_concurrent_citations = 20
-periodic_save_interval_qa = 10
-periodic_save_interval_citations = 50
+periodic_save_interval_qa = 25
+periodic_save_interval_citations = 100
 
 # Artifact selection
 artifact_categories = [

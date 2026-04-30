@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 import tomllib
 import traceback
@@ -53,8 +54,8 @@ except ImportError:
 load_dotenv()
 
 logger = loguru.logger
-os.makedirs("logs", exist_ok=True)
-logger.add("logs/generate-qa.log", rotation="5 MB", compression="zip", level="DEBUG")
+# Loguru sinks are configured inside main() so the console level can follow
+# the --log-level flag while the file sink stays at DEBUG.
 
 
 # ---------------------------------------------------------------------------
@@ -754,7 +755,19 @@ def main():
     parser.add_argument("--config", default="generate-qa.toml", help="Path to TOML config")
     parser.add_argument("--host", default="localhost", help="Ollama host")
     parser.add_argument("--port", type=int, default=11434, help="Ollama port")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Console (stderr) log level. File log stays at DEBUG. "
+             "Use WARNING for clean progress-bar output.",
+    )
     args = parser.parse_args()
+
+    logger.remove()
+    logger.add(sys.stderr, level=args.log_level)
+    os.makedirs("logs", exist_ok=True)
+    logger.add("logs/generate-qa.log", rotation="5 MB", compression="zip", level="DEBUG")
 
     cfg_root = read_configuration(args.config)
     cfg = cfg_root["generate-qa"]
@@ -888,6 +901,12 @@ def main():
     out_path = os.path.join(output_dir, output_file)
     save_to_json(all_questions, out_path)
     logger.info(f"Saved {len(all_questions)} questions to {out_path}")
+
+    base_name, ext = os.path.splitext(output_file)
+    wo_context_path = os.path.join(output_dir, f"{base_name}_wo_context{ext}")
+    wo_context = [{k: v for k, v in q.items() if k != "context_text"} for q in all_questions]
+    save_to_json(wo_context, wo_context_path)
+    logger.info(f"Saved {len(wo_context)} questions (without context_text) to {wo_context_path}")
 
     save_questions_to_csv(all_questions, os.path.join(output_dir, output_csv_file))
 
