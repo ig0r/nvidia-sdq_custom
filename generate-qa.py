@@ -180,6 +180,95 @@ def is_ollama_model(model: str) -> bool:
     return not (is_gpt(model) or is_gemini(model))
 
 
+def _silent_task_exception_handler(loop, context: dict) -> None:
+    """Asyncio exception handler that drops noisy task-shutdown messages.
+
+    On a fatal-error SystemExit, concurrent Tasks finish with their own
+    exceptions that are never awaited (the as_completed consumer bailed out
+    on the first one). Asyncio's default handler then prints full chained
+    tracebacks via Task.__del__. We've already logged the human-readable
+    fatal-error reason via _is_fatal_error → SystemExit → main()'s
+    final-banner handler; the tracebacks add no signal, so we drop them.
+    """
+    msg = context.get("message", "") or ""
+    if msg.startswith("Task exception was never retrieved"):
+        return
+    if "Task was destroyed but it is pending" in msg:
+        return
+    loop.default_exception_handler(context)
+
+
+def _cancel_all_pending_tasks(loop) -> None:
+    """Cancel any tasks still pending on the loop and let cancellation settle.
+
+    Called from main()'s finally blocks before loop.close() so a fatal-error
+    SystemExit doesn't leave thousands of pending tasks emitting
+    'Task was destroyed but it is pending!' warnings on shutdown. Also drains
+    exceptions from already-done tasks so concurrent failures don't surface as
+    'Task exception was never retrieved' tracebacks.
+    """
+    all_t = list(asyncio.all_tasks(loop))
+    pending = [t for t in all_t if not t.done()]
+    if pending:
+        for t in pending:
+            t.cancel()
+        try:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except BaseException:
+            pass
+    for t in all_t:
+        if t.done() and not t.cancelled():
+            try:
+                t.exception()  # consume to silence "never retrieved" warnings
+            except (asyncio.CancelledError, asyncio.InvalidStateError):
+                pass
+
+
+def _is_fatal_error(exc: Exception, model: str) -> bool:
+    """Permanent provider errors that no retry will fix.
+
+    Authentication, authorization, malformed request, missing model.
+    Quota (ResourceExhausted) is already handled in its own except branch.
+    """
+    if is_gemini(model) and _GEMINI_AVAILABLE:
+        from google.api_core import exceptions as gax
+        if isinstance(exc, (
+            gax.InvalidArgument,     # 400 — bad key, bad schema, bad payload
+            gax.Unauthenticated,     # 401
+            gax.PermissionDenied,    # 403
+            gax.NotFound,            # 404 — wrong model name / endpoint
+            gax.FailedPrecondition,  # config-level rejections
+        )):
+            return True
+    if is_gpt(model):
+        try:
+            from openai import (
+                AuthenticationError,
+                PermissionDeniedError,
+                NotFoundError,
+                BadRequestError,
+            )
+        except ImportError:
+            pass
+        else:
+            if isinstance(exc, (
+                AuthenticationError,
+                PermissionDeniedError,
+                NotFoundError,
+                BadRequestError,
+            )):
+                return True
+    if is_ollama_model(model):
+        msg = str(exc).lower()
+        if any(s in msg for s in (
+            "connection refused",
+            "model not found",
+            "no such model",
+        )):
+            return True
+    return False
+
+
 def initialize_client(model: str, host: str = "localhost", port: int = 11434):
     if is_gpt(model):
         api_key = os.getenv("OPENAI_API_KEY")
@@ -534,6 +623,12 @@ async def generate_qa_for_task_async(
             logger.error(f"❌ QUOTA EXCEEDED: {e}")
             raise SystemExit(f"API quota exceeded: {e}")
         except Exception as e:
+            if _is_fatal_error(e, model):
+                logger.error(
+                    f"❌ FATAL provider error on task {task.task_key} "
+                    f"(no retry — verify API key / model / config): {e}"
+                )
+                raise SystemExit(f"Fatal provider error: {e}")
             logger.error(f"Error on task {task.task_key} (retry {retry + 1}/{max_tries}): {e}\n{traceback.format_exc()}")
             if retry == max_tries - 1:
                 return task, [], False, str(e)
@@ -643,6 +738,12 @@ async def extract_citation_for_question_async(
             logger.error(f"❌ QUOTA EXCEEDED: {e}")
             raise SystemExit(f"API quota exceeded: {e}")
         except Exception as e:
+            if _is_fatal_error(e, model):
+                logger.error(
+                    f"❌ FATAL provider error during citation extraction "
+                    f"(no retry — verify API key / model / config): {e}"
+                )
+                raise SystemExit(f"Fatal provider error: {e}")
             logger.error(f"Citation error (retry {retry + 1}/{max_tries}): {e}\n{traceback.format_exc()}")
 
     return CitationResponse(
@@ -837,6 +938,7 @@ def main():
 
         t0 = time.time()
         loop = asyncio.new_event_loop()
+        loop.set_exception_handler(_silent_task_exception_handler)
         try:
             asyncio.set_event_loop(loop)
             all_questions = loop.run_until_complete(run_phase1(
@@ -845,6 +947,7 @@ def main():
                 qa_intermediate_path, save_every_qa, existing,
             ))
         finally:
+            _cancel_all_pending_tasks(loop)
             loop.close()
         logger.info(f"Phase 1 complete: {len(all_questions)} questions in {time.time() - t0:.1f}s")
     else:
@@ -863,6 +966,7 @@ def main():
         logger.info("=" * 60)
         t0 = time.time()
         loop = asyncio.new_event_loop()
+        loop.set_exception_handler(_silent_task_exception_handler)
         try:
             asyncio.set_event_loop(loop)
             all_questions = loop.run_until_complete(run_phase2(
@@ -871,6 +975,7 @@ def main():
                 citations_intermediate_path, save_every_cit,
             ))
         finally:
+            _cancel_all_pending_tasks(loop)
             loop.close()
         logger.info(f"Phase 2 complete in {time.time() - t0:.1f}s")
     else:
@@ -910,4 +1015,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        # Convert our fatal-error SystemExit (raised with a message string from
+        # _is_fatal_error / quota paths) into a clean final banner so the
+        # reason is visible at the bottom of the output without scrolling up.
+        # Numeric exit codes (e.g. argparse --help exits 0) pass through unchanged.
+        if isinstance(e.code, str):
+            logger.error("=" * 60)
+            logger.error("❌ Execution stopped")
+            logger.error(f"Reason: {e.code}")
+            logger.error("=" * 60)
+            sys.exit(1)
+        raise
