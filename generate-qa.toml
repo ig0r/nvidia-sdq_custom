@@ -6,10 +6,10 @@ extract_citations = true
 
 # Input: directory of *-logic-ctx.json + *-logic-artifacts.json
 # (output of _nemo.py random_logical chunking + langextract artifact stage)
-chunk_dir = "./data/_test/chunk_test-random-logic2/doc-chunks_256_random_logical"
+chunk_dir = "./data/nemo_briefs_20260429/doc-chunks_256_random_logical"#"./data/_test/chunk_test-random-logic2/doc-chunks_256_random_logical"
 
 # Output
-output_dir = "./data/_test/qa-gen"
+output_dir = "./data/nemo_briefs_20260429/qa-gen"#"./data/_test/qa-gen"
 output_file = "generated-questions.json"
 output_qa_file = "generated-questions_qa_only.json"
 output_csv_file = "generated-questions.csv"
@@ -19,8 +19,8 @@ question_generate_prompt = "./prompts/nemo_qa-gen-artifact.txt"
 extract_citation_prompt  = "./prompts/nemo_extract-citation.txt"
 
 # Models (gpt-* | gemini-* | any other = ollama model)
-model_qa = "gpt-4o-mini"
-model_citations = "gpt-4o-mini"
+model_qa = "gpt-4o-mini"#"gemini-2.5-flash"#"gpt-4o-mini"
+model_citations = "gpt-4o-mini"#"gemini-2.5-flash"#"gpt-4o-mini"
 
 # Concurrency / periodic save
 max_concurrent_qa = 20
@@ -29,15 +29,22 @@ periodic_save_interval_qa = 25
 periodic_save_interval_citations = 100
 
 # Artifact selection
+# artifact_categories = [
+#   "finding",
+#   "issue",
+#   "method",
+#   "procedure",
+#   "recommendation",
+#   "best_practice",
+#   "rationale",
+# ]
+
 artifact_categories = [
-  "finding",
-  "issue",
-  "method",
-  "procedure",
-  "recommendation",
-  "best_practice",
-  "rationale",
+    "finding", "issue", "method", "procedure",
+    "recommendation", "best_practice", "rationale",
+    "requirement", "definition", "constraint", "parameter", "condition",
 ]
+
 include_summary_element = true   # one synthetic element per ctx from chunk_signals.summary
 max_artifacts_per_ctx = 0        # 0 = no cap
 

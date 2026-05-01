@@ -168,16 +168,21 @@ def replace_symbols(text: str, symbols: list[dict]) -> str:
 # Model routing (gpt-* / gemini-* / ollama)
 # ---------------------------------------------------------------------------
 
+def is_ollama_model(model: str) -> bool:
+    # Ollama identifiers use `name:tag` (e.g. "qwen3:4b", "gpt-oss:120b",
+    # "hf.co/owner/repo:tag"). OpenAI and Gemini model IDs never use a colon,
+    # so this is the unambiguous signal and it dominates prefix-based checks.
+    if ":" in model:
+        return True
+    return not (model.startswith("gpt") or model.startswith("gemini"))
+
+
 def is_gpt(model: str) -> bool:
-    return model.startswith("gpt")
+    return model.startswith("gpt") and not is_ollama_model(model)
 
 
 def is_gemini(model: str) -> bool:
-    return model.startswith("gemini")
-
-
-def is_ollama_model(model: str) -> bool:
-    return not (is_gpt(model) or is_gemini(model))
+    return model.startswith("gemini") and not is_ollama_model(model)
 
 
 def _silent_task_exception_handler(loop, context: dict) -> None:
