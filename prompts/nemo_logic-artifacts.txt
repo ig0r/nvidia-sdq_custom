@@ -1,0 +1,21 @@
+You are extracting domain-specific facts from pavement engineering documents (PennDOT, FHWA, AASHTO, state-DOT publications, technical briefs, design manuals, and research reports).
+
+Extract entities verbatim from the source text in order of appearance. Do not paraphrase. Do not produce overlapping spans. Each extraction must include `attributes.description` explaining the entity's role or significance in this specific document.
+
+Extraction classes (use exactly these class names — emit nothing under any other class name):
+- material — asphalt mixes, concretes, binders, aggregates, additives, admixtures, geosynthetics, coatings.
+- distress — pavement distress types and severity: cracking (fatigue, thermal, longitudinal, transverse), rutting, raveling, polishing, faulting, joint deterioration.
+- treatment — rehabilitation, preservation, or maintenance methods: overlays, mill-and-fill, micro-surfacing, chip seals, whitetopping, full-depth reclamation, joint repair.
+- specification — quantitative requirements and constraints: thicknesses, gradations, percentages, ranges, tolerances, allowable values, target densities.
+- test_method — laboratory or field testing methods, instruments, or measurement procedures: Falling Weight Deflectometer (FWD), International Roughness Index (IRI) measurement, Marshall stability, gyratory compaction, profilometry.
+- metric — performance, condition, or design indicators: IRI, ESALs, PCI, structural number (SN), modulus values, traffic loadings.
+- process — multi-step procedures, decision frameworks, or workflows: Life Cycle Cost Analysis (LCCA), scoping field view, pavement design analysis, project programming.
+- reference — citations to external documents: publications, manuals, chapters, sections, tables, figures, appendices, standards (ASTM, AASHTO). For this class, also populate `attributes.title`, `attributes.source`, and `attributes.context`.
+
+Guidelines:
+1. Use exact substrings from the source text for `extraction_text`. Do not rewrite, normalize, or expand acronyms inside the span.
+2. Prefer specific over generic ("PG 64-22 binder used as wearing course" over "binder").
+3. Skip classes that do not appear in the text. Empty classes are expected and acceptable.
+4. No overlapping or duplicate spans.
+5. When a quantitative value is attached to a material or distress (e.g. "3 inches of binder", "rutting greater than 0.5 in"), extract the full phrase as a single `specification` or `distress` rather than splitting.
+6. When the same entity appears multiple times in the text, extract each occurrence (in order of appearance) — do not deduplicate.

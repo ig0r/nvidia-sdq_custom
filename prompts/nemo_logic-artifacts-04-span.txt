@@ -1,0 +1,53 @@
+Extract semantic artifacts from pavement engineering text.
+An artifact is a source-grounded text span that expresses a meaningful rule, condition, process, method, value, concept, observation, recommendation, decision, explanation, issue, risk, or supporting evidence.
+Use exact source text for extraction_text. Do not paraphrase extraction_text.
+Extract only information stated in the source text.
+Do not infer missing information.
+Preserve the order of appearance.
+Prefer complete clauses or sentences over isolated words.
+Do not extract standalone metadata, page numbers, section titles, headers, footers, table numbers, figure numbers, captions, or standalone references.
+Allowed extraction classes:
+- requirement: mandatory or prohibited action, usually expressed by shall, must, required, prohibited, or equivalent language.
+- condition: if/when clause that controls applicability, eligibility, or triggering of another artifact.
+- exception: case where a normal rule does not apply, or where approval, waiver, or special circumstance changes the rule.
+- constraint: limitation, boundary, restriction, or scope limit.
+- procedure: ordered steps or workflow for completing a task.
+- method: analytical, design, testing, calculation, or evaluation approach.
+- formula: mathematical expression or calculation rule.
+- parameter: named variable, coefficient, input, output, design value, or material property.
+- threshold: numeric or categorical boundary used for classification, selection, or decision-making.
+- definition: explanation of the meaning of a term.
+- actor_role: person, office, organization, or role responsible for action, review, approval, or consultation.
+- deliverable: report, form, drawing, submission, record, package, analysis, or other output.
+- assumption: design premise or condition accepted as true for analysis.
+- finding: stated observation, result, diagnosis, or conclusion.
+- recommendation: suggested or preferred action that is not strictly mandatory.
+- best_practice: preferred, accepted, or commonly recommended practice for design, construction, testing, evaluation, documentation, or maintenance.
+- decision: selected option, approval, rejection, determination, or adopted conclusion.
+- rationale: explanation of why a requirement, recommendation, decision, finding, or method exists.
+- issue: identified problem, deficiency, conflict, or gap.
+- risk: possible adverse outcome, uncertainty, or failure mode.
+- evidence: data, observation, test result, measurement, or cited basis supporting a finding, decision, rationale, or requirement.
+Common attributes may include:
+- subject: what the artifact is mainly about.
+- scope: where, when, or to what the artifact applies.
+- context_reference: table, figure, section, form, standard, or document reference mentioned inside the extracted span.
+- source_cue: wording that signals the artifact type, such as shall, should, if, except, because, required, recommended.
+- description: brief normalized description of the artifact, grounded in the source span.
+- significance: why the artifact matters, only if the source text states or directly supports its purpose, effect, consequence, or importance.
+Boundary rules:
+- Use requirement when the text imposes a mandatory or prohibited action.
+- Use recommendation when the text suggests a specific action but does not make it mandatory.
+- Use best_practice when the text describes a generally accepted or preferred practice.
+- Use method when the text names or describes an analytical, design, testing, or calculation approach.
+- Use procedure when the text describes ordered steps or a workflow.
+- Use condition when the text controls when something applies.
+- Use exception when the text describes a case where the normal rule changes.
+- Use constraint when the text limits scope, use, applicability, or allowable choices.
+- Use finding when the text states an observation, result, diagnosis, or conclusion.
+- Use evidence when the text states data, measurements, test results, or observations that support another artifact.
+- Use rationale when the text explains why something is required, recommended, selected, observed, or used.
+- Use significance only when the source text states or directly supports the artifact's purpose, effect, consequence, or importance.
+Do not use these as extraction classes:
+table, figure, reference, metadata, section_title, page_number, header, footer, table_of_contents_entry, caption_alone, revision_date, document_title.
+If a table, figure, section, form, or external standard is mentioned inside a meaningful artifact, keep it only as an attribute such as context_reference or source_reference.

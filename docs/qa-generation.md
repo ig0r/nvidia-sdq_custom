@@ -1,22 +1,25 @@
 # QA Generation
 
-Two question-generation flows live in `_nemo.py`. They share `path2chunks` (Stage 0.1) but differ in how chunks are bundled before the LLM is asked to write QA pairs.
+The pipeline has two question-generation flows. They share `path2chunks` (Stage 0.1) but diverge after that:
 
-| Flag | Bundling | Status |
-|---|---|---|
-| `--sdg` | Multiple chunks per bundle, packed by `RecursiveChunker` under `[llm].max_input_tokens` and de-overlapped by `_trim_overlap_for_context` | Full pipeline (artifacts → QA pairs → eval) |
-| `--sdg-logical` | One **logical chunk** per bundle (1:1) | **Step 1 only** — bundles written, downstream stages deferred |
+| Entry point | Bundling | Required mode | Status |
+|---|---|---|---|
+| `python _nemo.py --sdg` | Multiple chunks per bundle, packed by `RecursiveChunker` under `[llm].max_input_tokens` and de-overlapped by `_trim_overlap_for_context` | `recursive`, `logical`, or `random_logical` | Full pipeline (artifacts → QA pairs → eval) |
+| `python _nemo.py --sdg-logical` | One **logical chunk** per bundle (1:1) | `random_logical` only | **Step 1**: writes `-logic-ctx.json` |
+| `python extract_artifacts.py` | Per-chunk extraction via Google's `langextract` + OpenAI `gpt-4o-mini` | `random_logical` only | **Step 2** (standalone): writes `-logic-artifacts.json` |
 
-Both flows write into `{output_dir}/doc-chunks_{chunk_size}_{method}/` and use disjoint filename suffixes so they coexist in one output dir.
+Both flows share `{output_dir}/doc-chunks_{chunk_size}_{method}/` and use disjoint filename suffixes. Future Steps 3 and 4 (`generate_qa_logical.py`, `eval_qa_logical.py`) will follow the same standalone-script pattern.
+
+`--sdg` + `random_logical` continues to work mechanically (logical chunks get re-bundled by `RecursiveChunker`, multi-hop QA runs across the bundles). It is **supported but discouraged** for mode 3 — use `--sdg-logical` + `extract_artifacts.py` instead to get the per-chunk framing those scripts are designed for.
 
 ---
 
 ## `--sdg-logical` (logical-chunk flow, Step 1)
 
-Generates `{doc_id}-logic-ctx.json` per document — one bundle per logical chunk — and stops there. Future steps will add `-logic-artifacts.json`, `-logic-qa_pairs.json`, `-logic-qa_eval.json`.
+Generates `{doc_id}-logic-ctx.json` per document — one bundle per logical chunk — and stops there.
 
 ### Prerequisite
-Set `[chunking].method` in `cfg/nemo.toml` to `"logical"` or `"random_logical"`. With `"recursive"` the command raises `ValueError` immediately, before any docs are touched.
+Set `[chunking].method = "random_logical"` in `cfg/nemo.toml`. With `"recursive"` or `"logical"` the command raises `ValueError` immediately, before any docs are touched. Mode-2 (`logical`) users should run `--sdg` instead.
 
 ### Invocations
 
@@ -31,20 +34,17 @@ Set `[chunking].method` in `cfg/nemo.toml` to `"logical"` or `"random_logical"`.
   --output_dir ./data/nemo_briefs_20260422
 
 # Combine with chunking — useful for a fresh corpus where chunks aren't cached.
-# --chunk-only runs first, --sdg-logical reads its output.
 .venv/bin/python _nemo.py --chunk-only --sdg-logical --cfg cfg/nemo.toml
-
-# Run both flows in one invocation — each writes its own files
-.venv/bin/python _nemo.py --sdg --sdg-logical --cfg cfg/nemo.toml
 ```
 
 ### Output files
 
 ```
-{output_dir}/doc-chunks_{chunk_size}_{method}/
-  {doc_id}-chunks.json         ← always (recursive in random_logical, logical otherwise)
-  {doc_id}-logic-chunks.json   ← only in random_logical mode
-  {doc_id}-logic-ctx.json      ← written by --sdg-logical
+{output_dir}/doc-chunks_{chunk_size}_random_logical/
+  {doc_id}-chunks.json          ← recursive intermediate (path2chunks)
+  {doc_id}-logic-chunks.json    ← final logical chunks (path2chunks)
+  {doc_id}-logic-ctx.json       ← written by --sdg-logical
+  {doc_id}-logic-artifacts.json ← written by extract_artifacts.py (Step 2)
 ```
 
 `-logic-ctx.json` wraps the entries with `doc_id` so the file self-identifies its source document:
@@ -57,7 +57,7 @@ Set `[chunking].method` in `cfg/nemo.toml` to `"logical"` or `"random_logical"`.
   ]
 }
 ```
-Single-element `chunks` list per entry, `tokens` mirrors the chunk's own count. In `random_logical` mode each chunk additionally carries `source_chunk_ids: list[int]`. Note: this diverges from the existing `-ctx.json` (a bare JSON array); schema parity for downstream reuse will be revisited in Step 2.
+Single-element `chunks` list per entry, `tokens` mirrors the chunk's own count. Each chunk additionally carries `source_chunk_ids: list[int]` (passed through from `-logic-chunks.json`). This diverges from the existing `-ctx.json` (a bare JSON array); the standalone Step 2 (`-logic-artifacts.json`) follows the same wrapped-with-`doc_id` convention.
 
 ### Re-running / idempotency
 
@@ -77,7 +77,214 @@ Plus one warning per oversized bundle:
 ```
 ... | CHUNK | _build_logical_contexts - <file>.md: chunk_id=K tokens=T > max_input_tokens=B
 ```
-The warning is informational — Step 1 passes oversized bundles through. Hard handling is deferred to Step 2.
+The warning is informational — Step 1 passes oversized bundles through.
+
+---
+
+## `extract_artifacts.py` (logical-context flow, Step 2 — standalone)
+
+Standalone script that reads each `{doc_id}-logic-ctx.json` (one entry per *context*, each wrapping one or more logical chunks), runs span-level extraction via Google's [`langextract`](https://github.com/google/langextract) plus chunk-level extraction via OpenAI Structured Outputs, and writes `{doc_id}-logic-artifacts.json` next to it. The context's text is the join of `chunks[*].text` with `"\n\n"` — same formula as `generate-qa.py::build_context_text`, so the two stages share a single source of truth for the iteration unit and the text frame. Each output record is keyed by `u_ctx_id`. Lives outside `_nemo.py` because Steps 2–4 of the mode-3 flow have shapes that differ from the bundled `--sdg` pipeline.
+
+### Prerequisites
+
+- `[chunking].method = "random_logical"` (the script exits with a clear error otherwise).
+- `OPENAI_API_KEY` set in `.env` or the environment (fails fast at startup if missing).
+- `langextract`, `openai`, `pydantic` installed (`pip install -r reqs.txt`; pinned in `reqs.txt`).
+- `*-logic-ctx.json` files already present under `{output_dir}/doc-chunks_{chunk_size}_random_logical/` — produced by `_nemo.py --sdg-logical` (typically chained: `--chunk-only --sdg-logical`). The script does NOT fall back to deriving contexts from `-logic-chunks.json`; if no `*-logic-ctx.json` is found, it logs `"NLP"` and exits cleanly.
+
+### Invocations
+
+```bash
+# Run after Step 1 (defaults to ./extract_artifacts.toml)
+.venv/bin/python extract_artifacts.py
+
+# Point at a different chunk directory (overrides [paths].input_dir)
+.venv/bin/python extract_artifacts.py \
+  --input_dir ./data/nemo_briefs_20260422/doc-chunks_256_random_logical
+
+# Force regeneration
+.venv/bin/python extract_artifacts.py --overwrite
+
+# Backward-compat: read [general].output_dir from the project-wide config and
+# auto-discover the single doc-chunks_*_random_logical/ directory under it
+.venv/bin/python extract_artifacts.py --cfg cfg/nemo.toml
+```
+
+### Per-chunk output: span-level extractions + chunk-level signals
+
+v4 produces two complementary outputs per chunk via two independent calls:
+
+- **Span-level extractions** (`extractions` field): 21-class normative taxonomy via `langextract`. Verbatim source spans + alignment offsets. Carries the per-clause artifacts.
+- **Chunk-level signals** (`chunk_signals` field): a single Pydantic-validated structured object via OpenAI Structured Outputs. One summary, 1-5 topics, 0+ pavement engineering terms. Carries chunk-wide signal for retrieval, filtering, and downstream QA generation.
+
+Each call is independently failure-isolated. The per-chunk wrapper carries an `errors` dict with `span` and `chunk` keys (each `null` on success or a string message on failure).
+
+#### Span-level vocabulary (21 classes)
+
+Normative/functional taxonomy: the classes describe what specific clauses *do* (impose a rule, state a condition, report a finding) rather than the domain entity they name.
+
+| Class | What it captures |
+|---|---|
+| `requirement` | mandatory or prohibited action — `shall`, `must`, `required`, `prohibited`, or equivalent language |
+| `condition` | if/when clause that controls applicability, eligibility, or triggering of another artifact |
+| `exception` | case where a normal rule does not apply, or where approval/waiver/special circumstance changes the rule |
+| `constraint` | limitation, boundary, restriction, or scope limit |
+| `procedure` | ordered steps or workflow for completing a task |
+| `method` | analytical, design, testing, calculation, or evaluation approach |
+| `formula` | mathematical expression or calculation rule |
+| `parameter` | named variable, coefficient, input, output, design value, or material property |
+| `threshold` | numeric or categorical boundary used for classification, selection, or decision-making |
+| `definition` | explanation of the meaning of a term |
+| `actor_role` | person, office, organization, or role responsible for action, review, approval, or consultation |
+| `deliverable` | report, form, drawing, submission, record, package, analysis, or other output |
+| `assumption` | design premise or condition accepted as true for analysis |
+| `finding` | stated observation, result, diagnosis, or conclusion |
+| `recommendation` | suggested or preferred action that is not strictly mandatory |
+| `best_practice` | preferred, accepted, or commonly recommended practice for design/construction/testing/evaluation/documentation/maintenance |
+| `decision` | selected option, approval, rejection, determination, or adopted conclusion |
+| `rationale` | explanation of why a requirement, recommendation, decision, finding, or method exists |
+| `issue` | identified problem, deficiency, conflict, or gap |
+| `risk` | possible adverse outcome, uncertainty, or failure mode |
+| `evidence` | data, observation, test result, measurement, or cited basis supporting a finding/decision/rationale/requirement |
+
+#### Chunk-level signals (`chunk_signals` field)
+
+A single structured object per chunk, produced by `client.beta.chat.completions.parse(response_format=ChunkSignals, ...)`. Pydantic models live in `extract_artifacts.py::ChunkSignals`.
+
+| Field | Shape | What it captures |
+|---|---|---|
+| `summary.summary` | `str` | 1-2 sentence content statement, source-grounded, self-contained (no meta-references like "the chunk", "this passage") |
+| `summary.document_functions` | `list[Literal[...]]` | One or more roles the chunk plays (e.g. `requirement`, `procedure`, `finding`, `recommendation`, `approval workflow`) |
+| `summary.scope` | `str | null` | Where, when, or to what the chunk applies, if stated |
+| `topics[].topic` | `str` | Concise normalized topic label (free-form; canonical vocabulary suggested in prompt) |
+| `topics[].role` | `Literal["primary", "secondary"]` | Exactly one `primary` per chunk; the rest `secondary` |
+| `terms[].term` | `str` | Verbatim domain term from the source |
+| `terms[].normalized_term` | `str | null` | Canonical version of the term, when useful |
+| `terms[].category` | `Literal[...]` | One of: `traffic`, `pavement_type`, `design_parameter`, `material`, `layer`, `method`, `test_method`, `distress`, `construction`, `maintenance`, `organization`, `form`, `software`, `other` |
+
+**Quantity rules**: exactly 1 `summary` (Pydantic-enforced); 1-5 `topics` (soft-validated — `ChunkLevelExtractor` caps at 5 with `"NLP"` log; warns if 0); 0+ `terms`. Generic words ("pavement", "design", "project") are excluded from `terms` unless part of a meaningful technical term.
+
+Out-of-scope span classes returned by the langextract call are dropped with an `"NLP"` log line. Pydantic enum violations on the chunk call surface as `errors["chunk"] = "<ValidationError ...>"` (the chunk_signals for that chunk is `null`).
+
+Do-not-extract types (`table`, `figure`, `reference`, `metadata`, `section_title`, `page_number`, `header`, `footer`, `table_of_contents_entry`, `caption_alone`, `revision_date`, `document_title`) appear only inside span-level `attributes.context_reference` (or `attributes.source_reference`) of a meaningful artifact — never as standalone extractions, never as `pavement_engineering_term` outputs.
+
+### Output schema
+
+`-logic-artifacts.json` wraps a **per-context** artifacts list with the document id. Each record is keyed by `u_ctx_id` (matching the corresponding entry in `-logic-ctx.json`) and carries `extractions` (span-level, class-bucketed), `chunk_signals` (the structured chunk-level object — or `null` on chunk-call failure), and `errors` (always present, dict with `span` and `chunk` keys).
+
+Span-level entries each carry an `artifact_id` of the form `{doc_id}_chunk_{chunk_id}_art_{idx}` and a canonical `u_artifact_id` of `{u_ctx_id}-art-{idx}`. Chunk-level signal items (topics, terms) do **not** carry `artifact_id` — they're identified by their position in the list.
+
+Provenance to recursive (pre-logical) chunks is reachable via join: an artifact's `u_ctx_id` matches the corresponding context in `-logic-ctx.json`, whose `chunks[*].source_u_chunk_ids` carries the recursive-chunk ids. The artifact record does NOT denormalize this — it's normalized in the sidecar.
+
+```json
+{
+  "doc_id": "TBF000027_UKN000",
+  "artifacts": [
+    {
+      "u_ctx_id": "TBF000027_UKN000-ctx-0",
+      "u_logic_chunk_id": "TBF000027_UKN000-logic-chunk-0",
+      "chunk_id": 0,
+      "tokens": 457,
+      "extractions": {
+        "requirement": [
+          {
+            "artifact_id": "TBF000027_UKN000_chunk_0_art_0",
+            "u_artifact_id": "TBF000027_UKN000-ctx-0-art-0",
+            "text": "separate pavement design analyses shall be prepared",
+            "description": "requirement to prepare separate pavement design analyses",
+            "significance": null,
+            "char_interval": {"start_pos": 145, "end_pos": 197},
+            "attributes": {
+              "modality": "shall",
+              "required_action": "prepared",
+              "target": "separate pavement design analyses",
+              "source_cue": "shall"
+            }
+          }
+        ],
+        "condition": [...],
+        "best_practice": [...]
+      },
+      "chunk_signals": {
+        "summary": {
+          "summary": "Separate pavement design analyses are required when projected 18-kip ESALs vary substantially between adjacent construction sections; the designer submits the analysis to the District for approval; adequate drainage is identified as good pavement design practice.",
+          "document_functions": ["requirement", "approval workflow"],
+          "scope": "pavement design analyses for adjacent construction sections"
+        },
+        "topics": [
+          {"topic": "pavement design analysis", "role": "primary"},
+          {"topic": "traffic loading", "role": "secondary"},
+          {"topic": "approval workflow", "role": "secondary"}
+        ],
+        "terms": [
+          {"term": "18-kip ESALs", "normalized_term": "18-kip ESAL", "category": "traffic"},
+          {"term": "pavement design analysis", "normalized_term": null, "category": "method"}
+        ]
+      },
+      "errors": {"span": null, "chunk": null}
+    },
+    {
+      "u_ctx_id": "TBF000027_UKN000-ctx-1",
+      "u_logic_chunk_id": "TBF000027_UKN000-logic-chunk-1",
+      "chunk_id": 1,
+      "tokens": 198,
+      "extractions": {},
+      "chunk_signals": null,
+      "errors": {"span": "OpenAI rate limit exceeded", "chunk": "OpenAI rate limit exceeded"}
+    }
+  ]
+}
+```
+
+`extractions` keys are a subset of the 21 span-level classes (omitted when empty). Per-extraction shape: `{artifact_id, text, description, significance, char_interval, attributes}`. `description` is always a string (defaults to `""` if the model omits it); `significance` is `null` or a non-empty string (the prompt instructs the model to populate it only when the source states or directly supports the artifact's purpose, effect, consequence, or importance); `attributes` carries type-specific keys (e.g. `modality`, `symbol`, `purpose`) plus the remaining common attributes (`subject`, `scope`, `context_reference`, `source_cue`) — it does *not* carry `description` or `significance`.
+
+`chunk_signals` is either an object conforming to the `ChunkSignals` Pydantic schema (single `summary` + `topics` list + `terms` list) or `null` when the chunk call failed. Topics and terms have no `artifact_id`, no `text`, and no `char_interval` — they're labels and verbatim strings, not source spans.
+
+`errors` is always a dict with exactly the keys `span` and `chunk`. Each value is `null` on success or the exception's `str()` value on failure. The two calls fail independently: `extractions = {}` with `errors.span` populated indicates a span-call failure; `chunk_signals = null` with `errors.chunk` populated indicates a chunk-call failure; both can be true at once.
+
+This **departs from the bundled flow's `-artifacts.json`** in two ways: (a) wrapper object with `doc_id`, (b) the new `chunk_signals` field with a structured (not class-bucketed) shape. Inside the standalone flow this is a v1→v2→v3→v4→v5→v6 progression: v1 had `description`/`significance` inside `attributes`; v2 promoted them to top level; v3 added 3 chunk-level langextract classes inside `extractions`; v4 moved chunk-level off langextract into the `chunk_signals` field; v5 added threaded concurrency; v6 switched the iteration unit from per-chunk (reading `*-logic-chunks.json`) to per-context (reading `*-logic-ctx.json`), aligning with `generate-qa.py`. Operators with cached v1–v5 `-logic-artifacts.json` files should re-run with `--overwrite`.
+
+### Configuration
+
+The script's default config is `./extract_artifacts.toml` (dedicated, repo-root). Shape:
+```toml
+[paths]
+input_dir = "./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
+
+[artifact_extraction]
+model = "gpt-4o-mini"
+temperature = 0.0
+extraction_passes = 2                              # span-level (langextract) recall passes
+max_char_buffer = 10000                            # disables internal sub-chunking for short logical chunks
+prompt_name = "nemo_logic-artifacts-04-span"        # span-level (langextract)
+chunk_prompt_name = "nemo_logic-artifacts-04-chunk" # chunk-level (OpenAI Structured Outputs)
+prompt_lib = "./prompts"
+# api_key resolved from .env::OPENAI_API_KEY at runtime if absent here
+```
+
+The TOML section is `[artifact_extraction]` (renamed from v3's `[langextract]` because the chunk call no longer goes through langextract). A v3 config with `[langextract]` raises a clear `KeyError` directing operators to update the section header.
+
+`input_dir` points directly at the chunk directory — outputs (`-logic-artifacts.json`) land in the same directory. Passing `--cfg cfg/nemo.toml` works too: the script reads `[general].output_dir`, globs `doc-chunks_*_random_logical/` under it, and uses the single match (errors if zero or multiple). Validates `[chunking].method == "random_logical"` if present. Missing `[artifact_extraction]` keys fall back to `LXConfig` defaults in `extract_artifacts.py`.
+
+### Log signals
+
+```
+... | CHUNK | __main__:main - <doc_id>: extracted artifacts from N logical chunks -> .../-logic-artifacts.json
+... | CHUNK | __main__:main - <doc_id>: cache hit -> .../-logic-artifacts.json
+... | NLP   | __main__:_extract_spans - <doc_id> chunk K: span call dropped class 'foo'
+... | NLP   | __main__:extract - <doc_id> chunk K: span extraction failed: <message>
+... | NLP   | __main__:extract - <doc_id> chunk K: chunk-signals extraction failed: <message>
+... | NLP   | __main__:ChunkLevelExtractor.extract - <doc_id> chunk K: 0 chunk topics emitted (expected 1-5)
+... | NLP   | __main__:ChunkLevelExtractor.extract - <doc_id> chunk K: 7 chunk topics emitted; capping to first 5
+```
+
+### Re-running / idempotency
+
+The script skip-writes a doc when `{doc_id}-logic-artifacts.json` exists and `--overwrite` is not passed. To force regeneration: delete the file or pass `--overwrite`.
+
+### Cost note
+
+Cost is currently **uninstrumented** — `langextract` does not surface OpenAI usage uniformly, and the direct OpenAI chunk call's usage is on `completion.usage` but not aggregated. Per-chunk model-call count: `extraction_passes` for span (default 2) + 1 for chunk = 3 calls. The chunk call's prompt is shorter than v3's (no few-shot examples, schema replaces format-by-example), so per-chunk cost is roughly equal to or slightly lower than v3 at ~$0.002 at gpt-4o-mini input prices. A tiktoken-based post-hoc estimator is a planned follow-up.
 
 ---
 

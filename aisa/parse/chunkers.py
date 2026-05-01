@@ -125,6 +125,58 @@ def _assemble_with_overlap_trim(
     return chunks, sources
 
 
+def group_kept_pieces(
+    pieces: list[str],
+    kept_indices: list[int],
+    llm: BaseLLM,
+    prompt_template: str,
+    window: int,
+    stride: int,
+    has_overlap: bool,
+) -> tuple[list[str], list[list[int]]]:
+    """Logical grouping over a masked subset of recursive pieces.
+
+    Splits ``kept_indices`` into maximal contiguous runs, runs ``_llm_split_decisions``
+    over each run independently, and concatenates the results. Gaps between runs are
+    implicit hard splits — no logical chunk crosses a dropped piece. Returned
+    ``source_chunk_ids`` reference original (unfiltered) piece indices.
+    """
+    if not kept_indices:
+        return [], []
+
+    runs: list[list[int]] = []
+    current: list[int] = [kept_indices[0]]
+    for idx in kept_indices[1:]:
+        if idx == current[-1] + 1:
+            current.append(idx)
+        else:
+            runs.append(current)
+            current = [idx]
+    runs.append(current)
+
+    all_chunks: list[str] = []
+    all_sources: list[list[int]] = []
+    for run in runs:
+        sub_pieces: list[str] = [pieces[i] for i in run]
+        if len(sub_pieces) == 1:
+            text = sub_pieces[0]
+            if text.strip():
+                all_chunks.append(text)
+                all_sources.append([run[0]])
+            continue
+        sub_splits: list[int] = _llm_split_decisions(
+            llm, prompt_template, sub_pieces, window, stride
+        )
+        sub_chunks, sub_sources = _assemble_with_overlap_trim(
+            sub_pieces, sub_splits, has_overlap
+        )
+        for ch, src in zip(sub_chunks, sub_sources):
+            all_chunks.append(ch)
+            all_sources.append([run[i] for i in src])
+
+    return all_chunks, all_sources
+
+
 class RecursiveTextChunker:
     def __init__(self, chunk_size: int, recursive_overlap: int):
         self.chunk_size: int = chunk_size

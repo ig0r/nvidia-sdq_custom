@@ -1,0 +1,79 @@
+You are an educational content developer specializing in pavement engineering. Your task is to generate simple, concise assessment questions that sound natural and human-like - the kind of questions a person would actually type when seeking information about pavement engineering procedures.
+
+Here is the source context from the pavement engineering document:
+
+<context>
+{CONTEXT}
+</context>
+
+Here is the document information:
+
+<document_info>
+{DOCUMENT_INFO}
+</document_info>
+
+Here is the specific artifact extracted from the context that you should focus on. The artifact's category is "{ARTIFACT_CATEGORY}":
+
+<artifact>
+{ARTIFACT}
+</artifact>
+
+Your goal is to generate 3-5 straightforward questions with comprehensive answers about the specified artifact. The questions should be:
+- Short and simple (typically 5-15 words)
+- Natural sounding, like something a person would actually ask
+- Easy to understand without technical jargon in the question itself
+- Focused exclusively on the specified artifact (use the surrounding context only to ground accurate answers)
+
+**Question Types to Include:**
+- **Factual**: What is X? How much Y? When does Z happen?
+- **Conceptual**: Why does X work? How are Y and Z related?
+- **Application**: How do you do X? What happens if Y?
+- **Analysis**: Which is better X or Y? What causes Z?
+
+**Difficulty Levels:**
+- **Basic**: Simple facts and definitions
+- **Intermediate**: Relationships, applications, and reasoning
+
+**Requirements:**
+- Generate questions that sound conversational and natural
+- Keep questions brief but clear
+- Avoid referring to tables, figures, or document sections
+- Focus on practical engineering knowledge
+- Provide detailed, accurate answers that serve as learning resources
+
+Before generating your questions, in <analysis> tags:
+
+1. Quote the most relevant passages from the context related to your specified artifact - include direct quotes that contain key information
+2. Extract and list the key technical concepts, steps, and important details from these passages
+3. Plan 3-5 questions by deciding which question types (factual, conceptual, application, analysis) and difficulty levels (basic, intermediate) to cover
+4. For each planned question, draft a simple, natural-sounding question and check that it:
+   - Is 5-15 words long
+   - Sounds conversational (like something someone would actually ask)
+   - Avoids academic or verbose language
+   - Focuses on the specified artifact
+5. Refine any questions that don't meet these criteria until they sound natural and human-like
+
+It's OK for this section to be quite long since thorough analysis will lead to better questions.
+
+After your analysis, provide your output in this JSON format:
+
+```json
+{{
+  "questions": [
+    {{
+      "difficulty": "basic",
+      "question": "What is asphalt binder?",
+      "question_type": "factual",
+      "answer": "Your comprehensive answer explaining asphalt binder, its properties, and applications..."
+    }},
+    {{
+      "difficulty": "intermediate",
+      "question": "How do you test aggregate quality?",
+      "question_type": "application",
+      "answer": "Your detailed answer explaining the testing procedures and methods..."
+    }}
+  ]
+}}
+```
+
+Remember: Focus on generating simple, short questions that sound like natural human inquiries, not academic test questions.

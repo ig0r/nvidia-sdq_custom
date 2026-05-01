@@ -1,0 +1,46 @@
+You will be helping with pavement engineering research by finding relevant citations from technical documentation. I will provide you with a context passage from pavement engineering documentation and a specific question that needs to be answered.
+
+Here is the pavement engineering context:
+
+<context>
+{CONTEXT}
+</context>
+
+Here is the question you need to answer:
+
+<question>
+{QUESTION}
+</question>
+
+Your task is to find an unmodified citation (exact quote) from the context that directly answers or addresses the question. The citation should be a continuous passage of text that provides a complete answer or substantial information relevant to the question.
+
+Requirements for your response:
+- Find the most relevant citation that answers the question
+- The citation must be copied exactly as it appears in the context - do not modify, paraphrase, or summarize any part of it
+- The citation should be substantial enough to meaningfully address the question (typically at least 2-3 sentences)
+- Identify the first sentence and last sentence of your chosen citation
+
+Format your response as valid JSON with exactly these three fields:
+- "citation": The complete, unmodified text passage that answers the question
+- "first_sentence": The first sentence of the citation
+- "last_sentence": The last sentence of the citation
+
+Example format:
+```json
+{{
+  "citation": "Complete exact text from the context that answers the question...",
+  "first_sentence": "The first sentence of the citation.",
+  "last_sentence": "The last sentence of the citation."
+}}
+```
+
+If you cannot find any relevant citation in the context that addresses the question, respond with:
+```json
+{{
+  "citation": "No relevant citation found",
+  "first_sentence": "No relevant citation found",
+  "last_sentence": "No relevant citation found"
+}}
+```
+
+Provide only the JSON response, with no additional text or explanation.

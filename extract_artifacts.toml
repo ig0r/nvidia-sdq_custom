@@ -1,0 +1,21 @@
+# Standalone config for extract_artifacts.py (mode-3 logical artifact extraction).
+#
+# This file is the default --cfg target. The script also accepts the project-wide
+# cfg/nemo.toml: in that case it reads [general].output_dir and auto-discovers the
+# single doc-chunks_*_random_logical/ directory under it.
+
+[paths]
+# Directory containing *-logic-chunks.json files (produced by `_nemo.py --chunk-only`
+# with [chunking].method = "random_logical"). Outputs land in the same directory.
+input_dir = "./data/nemo_briefs_20260429/doc-chunks_256_random_logical"#"./data/_test/chunk_test-random-logic2/doc-chunks_256_random_logical"#"./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
+
+[artifact_extraction]
+model = "gpt-4o-mini"
+temperature = 0.0
+extraction_passes = 2                          # span-level (langextract) recall passes
+chunk_concurrency = 8                          # 1 = sequential (v4 baseline); 8 = default (tier 2); raise to 16 on tier 3+
+max_char_buffer = 10000                        # disables internal langextract sub-chunking for our short logical chunks
+prompt_name = "nemo_logic-artifacts-04-span"        # span-level (langextract)
+chunk_prompt_name = "nemo_logic-artifacts-04-chunk" # chunk-level (OpenAI Structured Outputs)
+prompt_lib = "./prompts"
+# api_key resolved from .env::OPENAI_API_KEY at runtime if absent here

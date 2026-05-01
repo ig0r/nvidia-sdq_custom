@@ -1,0 +1,160 @@
+You are evaluating a single chunk from a pavement-engineering document. Your task is to decide whether the chunk contains substantive pavement-engineering content suitable for downstream question-answer generation, OR whether it is document boilerplate that should be excluded.
+
+Here is the chunk to evaluate:
+
+<chunk>
+{CHUNK}
+</chunk>
+
+# Scoring Schema
+
+Assign the chunk exactly one of these three scores:
+
+**1 = clearly relevant.** The chunk contains substantive pavement-engineering content such as:
+- Concepts, methods, findings, processes, technical detail
+- Observations, data, recommendations, requirements, analysis
+- Definitions, specifications
+- Project case studies (descriptions of specific construction projects with location, contractor, performance data)
+- Conclusions or summary discussions
+
+**0.5 = unsure / mixed / ambiguous.** Use this score when:
+- The chunk fragment is too short or lacks sufficient context to judge intent
+- The chunk mixes substantive content with closed-list noise categories
+- The content is plausibly relevant but you are not confident
+
+Reserve 0.5 for genuine uncertainty. Do not use it as a default.
+
+**0 = clearly noise.** The chunk is essentially one of the closed-list noise categories defined below. Apply this only when you are confident.
+
+# Closed-List Noise Categories (score = 0)
+
+Label a chunk as 0 only if it is essentially one of these:
+
+- Sponsor / funder lists
+- Principal investigator / author / contact blocks (names, phones, emails, postal addresses, ORCID IDs, agreement officer info)
+- Mission / vision statements (e.g. "The mission of … is to …")
+- Copyright / disclaimer / liability notices
+- Distribution & availability notices ("This document is available from …")
+- Key Words / index-term / classification lists
+- References / bibliography sections (whole sections of citation entries, not in-content citations)
+- Isolated figure or table captions sitting alone with no surrounding content
+- Page headers / footers / running titles / publication identifiers (e.g. "FHWA-HIF-22-020")
+- Table-of-contents fragments
+- Quality-assurance / endorsement / non-endorsement statements
+
+# Special Cases
+
+**In-content citations remain relevant:** A sentence containing "(Snyder et al. 2018)" inside a content paragraph is part of the content and should be scored 1. Only standalone reference sections with lists of citation entries score 0.
+
+**References boundary:** The References / Bibliography / Cited Standards section starts at a heading like "# REFERENCES", "# Bibliography", "**AASHTO Standards**", "**ASTM Standards**", or similar, AND consists of contiguous citation entries thereafter (typically formatted as "Author. Year. Title. Publisher." or "- *AASHTO M 319-02: …*").
+
+Content that appears BEFORE that heading — including project case studies, CONCLUSIONS sections, summary discussions, figure captions surrounded by content, implementation findings — is CONTENT (score 1 or 0.5), even when it sits in the last few chunks of the document. Only the contiguous citation listings that follow the heading score 0.
+
+# Worked Examples
+
+**Example A** — mixed head-of-doc chunk (sponsors + PI + mission, with a project title):
+```
+#### **June 2006**
+#### **RESEARCH PROJECT TITLE**
+Evaluation of Unbonded Ultrathin Whitetopping of Brick Streets
+### **SPONSORS**
+Iowa Highway Research Board (TR-466) Iowa Department of Transportation …
+### **PRINCIPAL INVESTIGATOR**
+James K. Cable Assoc. Prof., Civil … Iowa State University 515-294-2862
+jkcable@iastate.edu
+### **MORE INFORMATION**
+www.cptechcenter.org …
+The mission of the National Concrete Pavement Technology Center is to unite key
+transportation stakeholders around the central goal of advancing concrete pavement
+technology …
+```
+→ score: 0.5
+→ reason: "Sponsors, PI contact, mission statement; project title embedded"
+
+**Example B** — pure references list:
+```
+- Xiao, J. Z., J. Li, and C. Zhang. 2005. Mechanical Properties of Recycled
+Aggregate Concrete under Uniaxial Loading. *Cement and Concrete Research*, Vol. 35,
+pp. 1187–1194.
+- Xiao, J. Z., W. Li, Y. Fan, and X. Huang. 2012. An Overview of Study of Recycled
+Aggregate Concrete in China (1996–2011). *Construction and Building Materials*,
+Vol. 31, pp. 364–383.
+```
+→ score: 0
+→ reason: "Bibliography list; references section"
+
+**Example C** — pure quality-assurance statement:
+```
+#### **QUALITY ASSURANCE STATEMENT**
+The Federal Highway Administration (FHWA) provides high-quality information to
+serve Government, industry, and the public in a manner that promotes public
+understanding. Standards and policies are used to ensure and maximize the quality,
+objectivity, utility, and integrity of its information.
+```
+→ score: 0
+→ reason: "FHWA quality assurance statement"
+
+**Example D** — substantive technical content:
+```
+RCA characteristics typically differ slightly from those of virgin aggregates. RCA
+particles are comprised of both the natural aggregate used to produce the source
+concrete as well as adhered (or reclaimed) mortar from the source concrete (Figure
+1). The differences between RCA properties and virgin aggregate properties are
+typically driven by the characteristics and volume of adhered mortar, which is
+lighter and more porous than the aggregate fraction.
+```
+→ score: 1
+→ reason: "RCA particle characteristics; technical content with citation"
+
+**Example E** — project case study near end of document, before references section:
+```
+Completed in 2016, the Georgia Department of Transportation (GDOT) I-16 project
+included 56 miles of truck lane replacement and new inside and outside shoulder
+construction (Figure 3). The existing 10-inch thick concrete slab (constructed
+during the 1960s and 1970s) was crushed at a nearby stationary facility to
+produce RCA for use in the new concrete shoulders. Trial batches using 100
+percent RCA as fine and coarse aggregate produced a mixture that was too sticky,
+so a natural sand was blended with the RCA to improve workability.
+```
+→ score: 1
+→ reason: "GDOT I-16 project case study; substantive technical detail"
+
+**Example F** — boundary chunk: conclusions + figure captions + start of REFERENCES heading:
+```
+The contractor reported no issues with the RCA used in the new lean concrete base
+… Completed in 2020, this project was also the first CRCP pavement in Caltrans
+District 7. … # CONCLUSIONS RCA can be incorporated into new concrete paving
+mixtures … RCA durability concerns can be addressed through typical aggregate
+testing and screening protocols. *Figure 3. Concrete shoulders using RCA on I-16
+in Georgia* *Figure 4. RCA used in lean concrete base on I-710* # REFERENCES
+**AASHTO Standards (voluntary). …:**
+```
+→ score: 0.5
+→ reason: "Mixed: conclusions + figure captions + start of references heading"
+
+# Output Format
+
+First, think through your evaluation in <scratchpad> tags. Consider:
+- What type of content does this chunk contain?
+- Does it match any closed-list noise categories?
+- Is there substantive pavement-engineering content?
+- If mixed or ambiguous, why?
+
+Then, provide your response as a JSON object inside <json> tags with exactly these fields:
+
+- **score**: Must be exactly 0, 0.5, or 1
+- **reason**: Brief explanation, 15 words or fewer
+
+Example output format:
+<scratchpad>
+[Your reasoning here]
+</scratchpad>
+
+<json>
+{{
+  "score": 1,
+  "reason": "Technical discussion of RCA properties and mortar characteristics"
+}}
+</json>
+
+Provide only valid JSON. Do not include any text outside the <json> tags except for your scratchpad.
