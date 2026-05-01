@@ -1,0 +1,18 @@
+Title = "Filter Questions by Citation Eval"
+
+[filter-questions-citation-eval]
+# Path to the QA JSON produced by generate-qa.py.
+# Outputs (sibling of input):
+#   <input_stem>-c-eval.json          — kept records
+#   <input_stem>-c-eval-dropped.json  — dropped records with _drop_reason
+input_file = "./data/nemo_briefs_20260429/qa-gen-cluster/generated-questions_wo_context.json"
+
+# Sentinels treated as low-quality citations (strict equality on full_citation.citation).
+# Order matters: index 0 -> code_sentinel reason, index 1 -> prompt_sentinel reason.
+# Source of truth:
+#   index 0: generate-qa.py:754-758 (retry-exhaustion fallback)
+#   index 1: prompts/nemo_extract-citation.txt:37-44 (LLM no-citation fallback)
+sentinels = [
+  "Max retries reached. No citation available.",
+  "No relevant citation found",
+]
