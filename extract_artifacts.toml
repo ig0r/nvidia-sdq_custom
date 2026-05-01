@@ -7,7 +7,7 @@
 [paths]
 # Directory containing *-logic-chunks.json files (produced by `_nemo.py --chunk-only`
 # with [chunking].method = "random_logical"). Outputs land in the same directory.
-input_dir = "./data/_test/chunk_test-random-logic2/doc-chunks_256_random_logical"#"./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
+input_dir = "./data/nemo_briefs_20260429/doc-chunks_256_random_logical"#"./data/_test/chunk_test-random-logic2/doc-chunks_256_random_logical"#"./data/nemo_briefs_20260422/doc-chunks_256_random_logical"
 
 [artifact_extraction]
 model = "gpt-4o-mini"
