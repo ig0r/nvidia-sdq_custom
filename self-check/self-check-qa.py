@@ -177,8 +177,11 @@ def main():
         "--config",
         dest="config",
         type=str,
-        default="self-check/self-check-qa.toml",
-        help="path to the TOML config (default: self-check/self-check-qa.toml)",
+        default="./self-check-qa.toml",
+        help=(
+            "path to the TOML config (default: ./self-check-qa.toml — assumes "
+            "you run this script from the self-check/ directory)"
+        ),
     )
     parser.add_argument(
         "--host",
@@ -193,6 +196,17 @@ def main():
         type=int,
         default=11434,
         help="Ollama port (default: 11434)",
+    )
+    parser.add_argument(
+        "--limit",
+        dest="limit",
+        type=int,
+        default=None,
+        help=(
+            "Debug: evaluate only the first N records from input_qa_json. "
+            "Applied before resume/skip logic, so outputs will contain at "
+            "most N entries. Omit for a full run."
+        ),
     )
     args = parser.parse_args()
 
@@ -220,6 +234,17 @@ def main():
         sys.exit(1)
 
     logger.info(f"Loaded {len(qa_records)} records.")
+
+    if args.limit is not None:
+        if args.limit < 0:
+            logger.error(f"--limit must be non-negative, got {args.limit}")
+            sys.exit(1)
+        original_count = len(qa_records)
+        qa_records = qa_records[: args.limit]
+        logger.info(
+            f"--limit {args.limit} applied: evaluating {len(qa_records)} / "
+            f"{original_count} records (debug mode)."
+        )
 
     # Authoritative input order (matches CSV row order at the end).
     input_order_ids = [r["question_id"] for r in qa_records]

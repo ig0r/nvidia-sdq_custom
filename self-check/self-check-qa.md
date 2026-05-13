@@ -159,15 +159,35 @@ Prerequisites:
 2. The project virtualenv at `.venv/` (or an env with `loguru`, `ollama`,
    `pydantic`, `tqdm`, `python-dotenv`, optional `requests` for Pushover).
 
+**Run from `self-check/`.** All TOML paths are relative to that directory,
+and the default `--config` is `./self-check-qa.toml`:
+
 ```bash
-.venv/bin/python self-check/self-check-qa.py \
-    --config self-check/self-check-qa.toml \
-    --host   localhost \
-    --port   11434
+cd self-check
+../.venv/bin/python self-check-qa.py \
+    --host localhost \
+    --port 11434
 ```
 
-The script logs to `logs/self-check-qa.log` (rotated at 5 MB, zipped). The
-`logs/` directory is auto-created on startup, so no manual setup is needed.
+CLI flags:
+
+| flag       | default                  | purpose                                                                              |
+| ---------- | ------------------------ | ------------------------------------------------------------------------------------ |
+| `--config` | `./self-check-qa.toml`   | path to the TOML config                                                              |
+| `--host`   | `localhost`              | Ollama host                                                                          |
+| `--port`   | `11434`                  | Ollama port                                                                          |
+| `--limit`  | (none — full run)        | **Debug-only.** Evaluate only the first N records from `input_qa_json`. Applied before resume/skip, so outputs contain at most N entries. |
+
+Example local debug run on just the first 5 records:
+
+```bash
+cd self-check
+../.venv/bin/python self-check-qa.py --limit 5
+```
+
+The script logs to `logs/self-check-qa.log` relative to the CWD (so
+`self-check/logs/self-check-qa.log` when run as above), rotated at 5 MB and
+zipped. The `logs/` directory is auto-created on startup.
 
 ---
 
