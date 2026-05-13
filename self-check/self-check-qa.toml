@@ -8,8 +8,9 @@ Title = "Self-check QA evaluation"
 # Each record has: question_id, question, answer, context_text, ...
 input_qa_json = "../data/nemo_briefs_20260429/qa-gen-cluster/generated-questions.json"
 
-# Prompt template (same one used by the example pipeline)
-prompt_eval = "./prompts/evaluate-process-question-answer-02.txt"
+# Prompt template (same prompt body as the example pipeline,
+# renamed from prompts/evaluate-process-question-answer-02.txt)
+prompt_eval = "./prompts/self-check-01.txt"
 
 # Ollama model
 # cluster: gpt-oss:120b ; local debug: gpt-oss:20b

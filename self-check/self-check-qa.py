@@ -339,7 +339,8 @@ def main():
                 prompt_template
                 .replace("{QUESTION}", str(question_text))
                 .replace("{ANSWER}", str(answer_text))
-                .replace("{PROCESS_CITATION}", str(context_text))
+                # {CONTEXT} was {PROCESS_CITATION} in the example pipeline
+                .replace("{CONTEXT}", str(context_text))
             )
 
             llm_result: Optional[QuestionAnswerEvaluationResponse] = None

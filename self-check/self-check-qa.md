@@ -29,9 +29,9 @@ for each record in input_qa_json:
         evaluation = -1                              # skip — no context
     else:
         prompt = prompt_template
-                   .replace("{QUESTION}",         question)
-                   .replace("{ANSWER}",           answer)
-                   .replace("{PROCESS_CITATION}", context_text)
+                   .replace("{QUESTION}", question)
+                   .replace("{ANSWER}",   answer)
+                   .replace("{CONTEXT}",  context_text)
         response   = await ollama.chat(..., format=QuestionAnswerEvaluationResponse.model_json_schema())
         evaluation = response.evaluation             # ∈ {0, 0.5, 1}
 
@@ -61,7 +61,7 @@ self-check/
 ├── self-check-qa.toml              # config
 ├── self-check-qa.md                # this doc
 ├── prompts/
-│   └── evaluate-process-question-answer-02.txt   # the judge prompt
+│   └── self-check-01.txt                         # the judge prompt
 └── self-check-output/              # outputs (created at runtime)
     ├── self-check-qa-results.json             (full records + evaluation)
     ├── self-check-qa-results_wo_context.json  (same, with context_text stripped)
@@ -69,8 +69,11 @@ self-check/
     └── self-check-qa-intermediate.json        (rolling checkpoint; removed on clean completion)
 ```
 
-The prompt file is a copy of `self-check/example/prompts/evaluate-process-question-answer-02.txt`;
-the new script has its own `prompts/` directory so it is independent of the
+The prompt file is the same prompt body as the example pipeline's
+`self-check/example/prompts/evaluate-process-question-answer-02.txt`, renamed
+to `self-check-01.txt` and with its single citation placeholder renamed from
+`{PROCESS_CITATION}` to `{CONTEXT}` (see [§4](#4-prompt--promptsself-check-01txt)).
+The new script has its own `prompts/` directory so it is independent of the
 example.
 
 ---
@@ -85,7 +88,7 @@ example.
 | `question_id`  | identity key + output ordering           |
 | `question`     | `{QUESTION}` in the prompt               |
 | `answer`       | `{ANSWER}` in the prompt                 |
-| `context_text` | `{PROCESS_CITATION}` in the prompt       |
+| `context_text` | `{CONTEXT}` in the prompt                |
 
 Any other fields (`full_citation`, `question_type`, `doc_id`, `u_ctx_id`,
 `artifact`, `model_qa`, …) are preserved verbatim in the JSON output.
@@ -96,10 +99,16 @@ example's "missing citation" sentinel handling, adapted to the new schema.
 
 ---
 
-## 4. Prompt — `prompts/evaluate-process-question-answer-02.txt`
+## 4. Prompt — `prompts/self-check-01.txt`
+
+> **Renamed.** This prompt was originally `evaluate-process-question-answer-02.txt`
+> with placeholder `{PROCESS_CITATION}` in the example pipeline
+> (`self-check/example/prompts/`). The body is unchanged; only the file name
+> and the citation placeholder (now `{CONTEXT}`) were renamed to match the
+> new dataset's `context_text` field.
 
 ```
-Context: {PROCESS_CITATION}
+Context: {CONTEXT}
 Question: {QUESTION}
 Answer: {ANSWER}
 Is Answer supported by the provided Context with respect to the Question?
@@ -110,7 +119,7 @@ Answer Yes, No, or N/A the following JSON format:
 ```
 
 Substitution is plain `str.replace`, not a template engine — keep the
-placeholder casing exact (`{QUESTION}`, `{ANSWER}`, `{PROCESS_CITATION}`).
+placeholder casing exact (`{QUESTION}`, `{ANSWER}`, `{CONTEXT}`).
 The doubled braces around the JSON example survive `replace` untouched, so
 the LLM still sees single braces.
 

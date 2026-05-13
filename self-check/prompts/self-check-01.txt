@@ -1,4 +1,4 @@
-Context: {PROCESS_CITATION}
+Context: {CONTEXT}
 Question: {QUESTION}
 Answer: {ANSWER}
 Is Answer supported by the provided Context with respect to the Question?
