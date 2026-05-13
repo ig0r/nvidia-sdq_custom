@@ -7,15 +7,15 @@
 
 [general]
 input      = "./data/nemo_briefs_20260429/qa-gen-cluster/generated-questions_wo_context-c-eval.json"
-db_path    = "./data/nemo_briefs_20260429/eval2/qdrant_db"
-output_dir = "./data/nemo_briefs_20260429/eval2"
+db_path    = "./data/nemo_briefs_20260429/eval2_qwen3_pplx/qdrant_db"#"./data/nemo_briefs_20260429/eval2/qdrant_db"
+output_dir = "./data/nemo_briefs_20260429/eval2_qwen3_pplx"
 name       = "techbriefs"
 
 [rag]
 collection_name   = "techbriefs_answers"
 embedding_backend = "sentence-transformers"
-embedding_model   = "BAAI/bge-base-en-v1.5"
-embedding_dim     = 768
+embedding_model   = "Qwen/Qwen3-Embedding-0.6B"#"BAAI/bge-base-en-v1.5"
+embedding_dim     = 1024 #768
 encode_batch_size = 64
 top_k             = 5
 match_at_k        = [1, 3, 5]
@@ -25,8 +25,8 @@ match_at_k        = [1, 3, 5]
 
 [rag-ft]
 collection_name   = "techbriefs_answers_ft"
-embedding_model   = "./examples/eval2/bge-base-pavements-matryoshka"
-embedding_dim     = 768
+embedding_model   = "./examples/eval2/finetuned-qwen3-embedding-pplx_20260409_011123" #"./examples/eval2/bge-base-pavements-matryoshka"
+embedding_dim     = 1024 #768
 encode_batch_size = 64
 top_k             = 5
 match_at_k        = [1, 3, 5]

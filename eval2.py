@@ -202,8 +202,16 @@ def _make_model_info(cfg: dict, method: str, embed_model: str,
 
 
 # ---------------------------------------------------------------------------
-# Shared eval loop — three match families: qid / logic_chunk / ctx
+# Shared eval loop — five match families:
+#   qid             — predicted question_id == GT, no exclusion
+#   logic_chunk     — predicted u_logic_chunk_id == GT, no exclusion
+#   lb_logic_chunk  — same, but after dropping the self-match
+#   ctx             — predicted u_ctx_id == GT, no exclusion
+#   lb_ctx          — same, but after dropping the self-match
 # ---------------------------------------------------------------------------
+_MATCH_FAMILIES = ("qid", "logic_chunk", "lb_logic_chunk", "ctx", "lb_ctx")
+
+
 def _run_eval(cfg: dict, section: str, model_info: dict, retrieve_fn,
               top_k: int, output_json_path: Path, output_csv_path: Path,
               pbar_desc: str, limit: int | None = None):
@@ -221,9 +229,8 @@ def _run_eval(cfg: dict, section: str, model_info: dict, retrieve_fn,
     output_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     results_all = []
-    qid_counters = {f"top{k}": 0 for k in match_at_k}
-    lc_counters = {f"top{k}": 0 for k in match_at_k}
-    ctx_counters = {f"top{k}": 0 for k in match_at_k}
+    counters = {fam: {f"top{k}": 0 for k in match_at_k}
+                for fam in _MATCH_FAMILIES}
 
     pbar = tqdm(questions, desc=pbar_desc, unit="q",
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} "
@@ -241,46 +248,42 @@ def _run_eval(cfg: dict, section: str, model_info: dict, retrieve_fn,
         # Fetch one extra so self-exclusion still leaves top_k.
         preds_raw = retrieve_fn(question, top_k + 1)
         preds = preds_raw[:top_k]
-
-        # qid: trivial self-retrieval check, no exclusion
-        qid_preds = [p["question_id"] for p in preds]
-        qid_matches = {f"top{k}": question_id in qid_preds[:k]
-                       for k in match_at_k}
-
-        # logic_chunk + ctx: exclude self-match before scoring
         preds_excl = [p for p in preds_raw
                       if p["question_id"] != question_id][:top_k]
-        lc_preds = [p["u_logic_chunk_id"] for p in preds_excl]
-        ctx_preds = [p["u_ctx_id"] for p in preds_excl]
-        lc_matches = {f"top{k}": gt["u_logic_chunk_id"] in lc_preds[:k]
-                      for k in match_at_k}
-        ctx_matches = {f"top{k}": gt["u_ctx_id"] in ctx_preds[:k]
-                       for k in match_at_k}
 
-        for k in match_at_k:
-            key = f"top{k}"
-            qid_counters[key] += int(qid_matches[key])
-            lc_counters[key] += int(lc_matches[key])
-            ctx_counters[key] += int(ctx_matches[key])
+        qid_preds    = [p["question_id"]      for p in preds]
+        lc_preds     = [p["u_logic_chunk_id"] for p in preds]
+        ctx_preds    = [p["u_ctx_id"]         for p in preds]
+        lb_lc_preds  = [p["u_logic_chunk_id"] for p in preds_excl]
+        lb_ctx_preds = [p["u_ctx_id"]         for p in preds_excl]
+
+        matches = {
+            "qid":            {f"top{k}": question_id              in qid_preds[:k]    for k in match_at_k},
+            "logic_chunk":    {f"top{k}": gt["u_logic_chunk_id"]   in lc_preds[:k]     for k in match_at_k},
+            "lb_logic_chunk": {f"top{k}": gt["u_logic_chunk_id"]   in lb_lc_preds[:k]  for k in match_at_k},
+            "ctx":            {f"top{k}": gt["u_ctx_id"]           in ctx_preds[:k]    for k in match_at_k},
+            "lb_ctx":         {f"top{k}": gt["u_ctx_id"]           in lb_ctx_preds[:k] for k in match_at_k},
+        }
+
+        for fam in _MATCH_FAMILIES:
+            for k in match_at_k:
+                key = f"top{k}"
+                counters[fam][key] += int(matches[fam][key])
 
         results_all.append({
             "question_id": question_id,
             "question": question,
             "ground_truth": gt,
             "predictions": preds,
-            "matches": {
-                "qid":         qid_matches,
-                "logic_chunk": lc_matches,
-                "ctx":         ctx_matches,
-            },
+            "matches": matches,
         })
 
         first_k = f"top{match_at_k[0]}"
         n = len(results_all)
         pbar.set_postfix_str(
-            f"qid={qid_counters[first_k]}/{n} "
-            f"lc={lc_counters[first_k]}/{n} "
-            f"ctx={ctx_counters[first_k]}/{n}"
+            f"qid={counters['qid'][first_k]}/{n} "
+            f"lc={counters['logic_chunk'][first_k]}/{n} "
+            f"lb_lc={counters['lb_logic_chunk'][first_k]}/{n}"
         )
 
     total = len(questions)
@@ -296,12 +299,9 @@ def _run_eval(cfg: dict, section: str, model_info: dict, retrieve_fn,
             header.extend([f"pred_{i}_qid", f"pred_{i}_doc_id",
                            f"pred_{i}_u_ctx_id", f"pred_{i}_u_logic_chunk_id",
                            f"score_{i}"])
-        for k in match_at_k:
-            header.append(f"qid_top{k}_match")
-        for k in match_at_k:
-            header.append(f"logic_chunk_top{k}_match")
-        for k in match_at_k:
-            header.append(f"ctx_top{k}_match")
+        for fam in _MATCH_FAMILIES:
+            for k in match_at_k:
+                header.append(f"{fam}_top{k}_match")
         writer.writerow(header)
 
         for r in results_all:
@@ -315,25 +315,20 @@ def _run_eval(cfg: dict, section: str, model_info: dict, retrieve_fn,
                             f"{p['score']:.4f}"])
             for _ in range(top_k - len(r["predictions"])):
                 row.extend(["", "", "", "", ""])
-            for k in match_at_k:
-                row.append(r["matches"]["qid"][f"top{k}"])
-            for k in match_at_k:
-                row.append(r["matches"]["logic_chunk"][f"top{k}"])
-            for k in match_at_k:
-                row.append(r["matches"]["ctx"][f"top{k}"])
+            for fam in _MATCH_FAMILIES:
+                for k in match_at_k:
+                    row.append(r["matches"][fam][f"top{k}"])
             writer.writerow(row)
 
     print(f"\nDone. {total} questions processed ({pbar_desc}).",
           file=sys.stderr)
     for k in match_at_k:
         key = f"top{k}"
-        q = qid_counters[key]
-        lc = lc_counters[key]
-        c = ctx_counters[key]
-        print(f"  Top-{k}  qid: {q}/{total} = {q / total:.4f}   "
-              f"logic_chunk: {lc}/{total} = {lc / total:.4f}   "
-              f"ctx: {c}/{total} = {c / total:.4f}",
-              file=sys.stderr)
+        parts = [f"Top-{k} "]
+        for fam in _MATCH_FAMILIES:
+            cnt = counters[fam][key]
+            parts.append(f"{fam}: {cnt}/{total} = {cnt / total:.4f}")
+        print("  " + "   ".join(parts), file=sys.stderr)
     print(f"Output JSON: {output_json_path}", file=sys.stderr)
     print(f"Output CSV:  {output_csv_path}", file=sys.stderr)
 

@@ -31,13 +31,18 @@ For each techbriefs question (or the first `N` if `-n N` is passed):
 2. Issues a Qdrant `query_points` call against the matching collection,
    retrieving `top_k + 1` candidates so the self-exclusion metrics still have
    `top_k` items after the self-match is removed.
-3. Computes three metric families per `k ∈ match_at_k` (default `[1, 3, 5]`):
+3. Computes five metric families per `k ∈ match_at_k` (default `[1, 3, 5]`):
    - **`qid_top{k}`** — query's own `question_id` is in top-K (trivial
      self-retrieval check; no exclusion).
    - **`logic_chunk_top{k}`** — query's `u_logic_chunk_id` matches a hit's
-     `u_logic_chunk_id` in the top-K **after self-exclusion** (drop the
-     prediction whose `question_id` equals the query's).
-   - **`ctx_top{k}`** — same shape, but on `u_ctx_id`.
+     `u_logic_chunk_id` in the top-K. **No self-exclusion** — the question's own
+     answer counts as a hit.
+   - **`lb_logic_chunk_top{k}`** — *low-boundary* variant: same as
+     `logic_chunk_top{k}` but **after dropping the self-match** (the prediction
+     whose `question_id` equals the query's). Tells you whether the embedder
+     can find a sibling answer from the same chunk when the original is hidden.
+   - **`ctx_top{k}`** — same as `logic_chunk_top{k}`, but on `u_ctx_id`.
+   - **`lb_ctx_top{k}`** — *low-boundary* variant of `ctx_top{k}`.
 4. Saves predictions + match flags to one JSON + one CSV per method.
 
 Each saved prediction carries full provenance:
@@ -216,9 +221,11 @@ Output filenames are derived as `{name}_{method.replace('-','_')}_results.{json,
         }
       ],
       "matches": {
-        "qid":         {"top1": true,  "top3": true,  "top5": true},
-        "logic_chunk": {"top1": true,  "top3": true,  "top5": true},
-        "ctx":         {"top1": true,  "top3": true,  "top5": true}
+        "qid":            {"top1": true,  "top3": true,  "top5": true},
+        "logic_chunk":    {"top1": true,  "top3": true,  "top5": true},
+        "lb_logic_chunk": {"top1": false, "top3": true,  "top5": true},
+        "ctx":            {"top1": true,  "top3": true,  "top5": true},
+        "lb_ctx":         {"top1": false, "top3": true,  "top5": true}
       }
     }
   ]
@@ -231,10 +238,15 @@ Output filenames are derived as `{name}_{method.replace('-','_')}_results.{json,
 question_id, question, gt_doc_id, gt_u_ctx_id, gt_u_logic_chunk_id,
 pred_1_qid, pred_1_doc_id, pred_1_u_ctx_id, pred_1_u_logic_chunk_id, score_1,
 ... ×top_k ...,
-qid_top1_match,         qid_top3_match,         qid_top5_match,
-logic_chunk_top1_match, logic_chunk_top3_match, logic_chunk_top5_match,
-ctx_top1_match,         ctx_top3_match,         ctx_top5_match
+qid_top1_match,            qid_top3_match,            qid_top5_match,
+logic_chunk_top1_match,    logic_chunk_top3_match,    logic_chunk_top5_match,
+lb_logic_chunk_top1_match, lb_logic_chunk_top3_match, lb_logic_chunk_top5_match,
+ctx_top1_match,            ctx_top3_match,            ctx_top5_match,
+lb_ctx_top1_match,         lb_ctx_top3_match,         lb_ctx_top5_match
 ```
+
+With default `top_k = 5` and `match_at_k = [1, 3, 5]` the row width is
+**45 columns**: 5 ground-truth + 25 prediction + 15 match (5 families × 3 K).
 
 Missing predictions (rare — only when Qdrant returns fewer than `top_k`)
 are padded with empty fields.
@@ -243,9 +255,9 @@ are padded with empty fields.
 
 ```
 Done. 40137 questions processed ([rag] search).
-  Top-1  qid: 32154/40137 = 0.8011   logic_chunk: 21902/40137 = 0.5457   ctx: 21902/40137 = 0.5457
-  Top-3  qid: 36874/40137 = 0.9187   logic_chunk: 28471/40137 = 0.7094   ctx: 28471/40137 = 0.7094
-  Top-5  qid: 38109/40137 = 0.9494   logic_chunk: 31002/40137 = 0.7724   ctx: 31002/40137 = 0.7724
+  Top-1   qid: 32154/40137 = 0.8011   logic_chunk: 33981/40137 = 0.8466   lb_logic_chunk: 21902/40137 = 0.5457   ctx: 33981/40137 = 0.8466   lb_ctx: 21902/40137 = 0.5457
+  Top-3   qid: 36874/40137 = 0.9187   logic_chunk: 37512/40137 = 0.9346   lb_logic_chunk: 28471/40137 = 0.7094   ctx: 37512/40137 = 0.9346   lb_ctx: 28471/40137 = 0.7094
+  Top-5   qid: 38109/40137 = 0.9494   logic_chunk: 38600/40137 = 0.9617   lb_logic_chunk: 31002/40137 = 0.7724   ctx: 38600/40137 = 0.9617   lb_ctx: 31002/40137 = 0.7724
 Output JSON: data/nemo_briefs_20260429/eval2/techbriefs_rag_results.json
 Output CSV:  data/nemo_briefs_20260429/eval2/techbriefs_rag_results.csv
 ```
@@ -309,12 +321,12 @@ jq '.results[0].predictions[0] | keys' data/nemo_briefs_20260429/eval2/techbrief
 # → ["answer_snippet","doc_id","question_id","rank","score","u_ctx_id","u_logic_chunk_id"]
 
 # Match families are present at the requested K values
-jq '.results[0].matches' data/nemo_briefs_20260429/eval2/techbriefs_rag_results.json
-# → {"qid":{"top1":..,"top3":..,"top5":..}, "logic_chunk":{...}, "ctx":{...}}
+jq '.results[0].matches | keys' data/nemo_briefs_20260429/eval2/techbriefs_rag_results.json
+# → ["ctx","lb_ctx","lb_logic_chunk","logic_chunk","qid"]
 
 # Row alignment in CSV (header width == row width)
 awk -F, '{print NF}' data/nemo_briefs_20260429/eval2/techbriefs_rag_results.csv | sort -u
-# → exactly one value (39 with default top_k=5, match_at_k=[1,3,5])
+# → exactly one value (45 with default top_k=5, match_at_k=[1,3,5])
 
 # Inspect the Qdrant collection directly
 .venv/bin/python -c "
@@ -327,10 +339,12 @@ print('rag-ft points:', c.count('techbriefs_answers_ft'))
 ```
 
 `qid_top1` should be very high (~0.8+) for both models — the question's exact
-answer is in the corpus, so self-retrieval is mostly trivial. `logic_chunk` and
-`ctx` are the meaningful comparison points: they exclude the self-match before
-scoring, so they reflect "does the embedder cluster siblings of the same chunk
-near each other?".
+answer is in the corpus, so self-retrieval is mostly trivial. `logic_chunk` /
+`ctx` (no exclusion) will be at least as high as `qid` for the same K, since
+the self-match always satisfies the chunk/ctx predicate too. The
+**`lb_logic_chunk` / `lb_ctx`** numbers are the meaningful comparison points:
+they hide the self-match before scoring, so they reflect "does the embedder
+cluster *siblings* of the same chunk near each other?".
 
 ---
 
@@ -396,20 +410,28 @@ jq '.results[] | select(.question_id == "TBF000001_UKN000-ctx-0-q-0") | .predict
 
 ## 10. Metrics — what they tell you
 
-| Metric                  | Reads as                                                                    |
-|-------------------------|-----------------------------------------------------------------------------|
-| `qid_top{k}`            | "Did the embedder find the original answer to this question?" (trivial sanity check) |
-| `logic_chunk_top{k}`    | "If we *hide* the original answer, does the embedder still surface a sibling answer from the same logical chunk?" |
-| `ctx_top{k}`            | "If we hide the original, does the embedder surface a sibling from the same context window?" |
+| Metric                     | Self-match? | Reads as                                                                         |
+|----------------------------|-------------|----------------------------------------------------------------------------------|
+| `qid_top{k}`               | included    | "Did the embedder find the original answer to this question?" (trivial sanity check) |
+| `logic_chunk_top{k}`       | included    | "Did the embedder find an answer from the same logical chunk?" — almost always satisfied via the self-match. |
+| `lb_logic_chunk_top{k}`    | excluded    | *Low boundary:* "If we **hide** the original answer, does the embedder still surface a sibling answer from the same logical chunk?" |
+| `ctx_top{k}`               | included    | Same as `logic_chunk_top{k}`, but on `u_ctx_id`.                                 |
+| `lb_ctx_top{k}`            | excluded    | *Low boundary:* "If we hide the original, does the embedder surface a sibling from the same context window?" |
 
 `qid` is high by construction (the question and its answer are paired in the
 corpus). It's there as a sanity probe — sub-`0.5` `qid_top1` would indicate
 something is wrong with the embedding pipeline.
 
-`logic_chunk` and `ctx` (both with self-exclusion) are the two metrics worth
-comparing across `rag` and `rag-ft`. They answer "did this fine-tune learn
-representations that cluster topical siblings", which is what we actually want
-the model to do for downstream RAG.
+`logic_chunk` and `ctx` (no exclusion) are upper bounds; whenever the
+embedder surfaces the question's own answer (`qid_top{k} == true`), these
+fire too. They're useful for spotting cases where the right chunk is hit but
+the original answer wasn't ranked first.
+
+**`lb_logic_chunk` and `lb_ctx`** are the two metrics worth comparing across
+`rag` and `rag-ft`. They answer "did this fine-tune learn representations
+that cluster topical siblings", which is what we actually want the model to
+do for downstream RAG. Naming follows `proc` / `proc_lb` from the pub242
+script.
 
 In the techbriefs corpus, `u_logic_chunk_id` and `u_ctx_id` happen to be 1:1
 (1,187 unique values each) — so the two columns are usually equal. If you
