@@ -20,6 +20,7 @@ ADDRESS=$(hostname -I | awk '{print $1}')
 export OLLAMA_MODELS="/vast/lkhazanovich/igs18/ollama/models"
 export OLLAMA_HOST="http://127.0.0.1:$PORT"
 
+mkdir -p /vast/lkhazanovich/igs18/llm/self-check/logs
 touch /vast/lkhazanovich/igs18/llm/self-check/logs/ollama-tb.log
 
 module load cuda/12.9.0
@@ -40,6 +41,7 @@ echo "-- host is $ADDRESS"
 echo "-- port is $PORT"
 
 cd /vast/lkhazanovich/igs18/llm/self-check/
+mkdir -p ./logs
 touch ./logs/inference-tb.log
 
 python self-check-qa.py --config self-check-qa.toml --host "localhost" --port $PORT &>> ./logs/inference-tb.log
