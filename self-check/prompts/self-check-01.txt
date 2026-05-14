@@ -1,0 +1,8 @@
+Context: {CONTEXT}
+Question: {QUESTION}
+Answer: {ANSWER}
+Is Answer supported by the provided Context with respect to the Question?
+Answer Yes, No, or N/A the following JSON format:
+{{
+"evaluation": <1 if Yes, 0 if No, or 0.5 if N/A>,
+}}

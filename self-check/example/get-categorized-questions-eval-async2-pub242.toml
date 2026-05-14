@@ -1,0 +1,35 @@
+Title = "Evaluate Categorized Questions"
+
+[eval-categorized-questions]
+# input with questions id to evaluate
+input_categorized_questions = "./processed-questions-pub242-chapters/pub242_question_ids.csv"
+# input data with questions information
+input_questions_data = "./processed-questions-pub242-chapters/generated-questions_5_async_citation_prompt_complete.json"
+# input data with process information
+input_process_data = "./processed-questions-pub242-chapters/process-citations_v5.json"
+# model evaluation
+model = "gpt-oss:120b"#"ministral-3:14b-instruct-2512-q8_0"
+# prompt for evaluating question answering
+prompt_eval = "./prompts/evaluate-process-question-answer-02.txt"
+# number of retries for LLM queries
+retries_number = 3
+# when process citation equals this text, skip LLM query and set evaluation to -1
+process_missining_citation = "No matching citation found"
+# output json file with combined evaluation results
+output_json = "./processed-questions-pub242-chapters/output-questions-eval2/categorized-questions-eval-results-pub242.json"
+# output csv file with combined evaluation results
+output_csv = "./processed-questions-pub242-chapters/output-questions-eval2/categorized-questions-eval-results-pub242.csv"
+# output json file with phase 1 evaluation results
+output_json_phase1 = "./processed-questions-pub242-chapters/output-questions-eval2/categorized-questions-eval-results-phase1-pub242.json"
+# output csv file with phase 1 evaluation results
+output_csv_phase1 = "./processed-questions-pub242-chapters/output-questions-eval2/categorized-questions-eval-results-phase1-pub242.csv"
+# intermediate results json file for resuming interrupted runs
+intermediate_json = "./processed-questions-pub242-chapters/output-questions-eval2/categorized-questions-eval-intermediate-pub242.json"
+# save intermediate results every N questions (0 = disabled)
+periodic_save_interval = 200
+# maximum number of questions to process in parallel (1 = sequential)
+max_concurrent_questions = 50
+# debug mode: when true, stores full_response in evaluation output JSON
+debug = false
+# whether to run phase 1 (evaluation answering)
+evaluation_answering = true
