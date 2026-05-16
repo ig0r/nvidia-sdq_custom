@@ -10,3 +10,7 @@ data.1
 small_corpus
 examples
 logs
+self-check/example/processed-questions-pub242-chapters
+rawdata-pub
+self-check/self-check-output-cluster
+rawdata-pubs
