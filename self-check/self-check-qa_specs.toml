@@ -1,0 +1,31 @@
+Title = "Self-check QA evaluation"
+
+[self-check-qa]
+# All paths are relative to this file's directory (./self-check).
+# Run the script from this directory:  python self-check-qa.py --config ./self-check-qa_specs.toml
+
+# Input: single JSON list produced by generate-qa.py (WITH context_text — not _wo_context)
+# Each record has: question_id, question, answer, context_text, ...
+input_qa_json = "../data/specs_20260516/qa-gen/generated-questions.json"
+
+# Prompt template (same prompt body as the example pipeline,
+# renamed from prompts/evaluate-process-question-answer-02.txt)
+prompt_eval = "./prompts/self-check-01.txt"
+
+# Ollama model — local debug per SRS (cluster would use gpt-oss:120b)
+model = "gpt-oss:120b"#"gpt-oss:20b"   # cluster=120b; local debug=20b
+
+# Outputs (created if missing)
+output_json            = "./self-check-output-specs/self-check-qa-results.json"
+output_json_wo_context = "./self-check-output-specs/self-check-qa-results_wo_context.json"
+output_csv             = "./self-check-output-specs/self-check-qa-results.csv"
+intermediate_json      = "./self-check-output-specs/self-check-qa-intermediate.json"
+
+# Behavior
+retries_number = 3
+periodic_save_interval = 200
+max_concurrent_questions = 16  # cluster OLLAMA_NUM_PARALLEL=16; lower (e.g. 4) for single local GPU (SRS R3)
+
+# When true, persist the raw Ollama response under
+# question_evaluation.evaluation_answering.full_response
+debug = false

@@ -4,8 +4,8 @@
 pipeline (`_nemo.py --sdg-logical` → `extract_artifacts.py` → `generate-qa.py` →
 `self-check/self-check-qa.py`), producing LLM-evaluated questions with **no OpenAI/Gemini calls**.
 **Component:** `nvidia-sdq_custom`
-**Version:** 0.1 (draft)
-**Status:** Proposed
+**Version:** 0.3 (implementation findings folded in)
+**Status:** Implemented + cluster-portable (FR-8). **Full 4-stage local smoke PASSED** on `gpt-oss:20b`, zero egress (bogus-but-non-empty keys), CH01, downstream bounded to 1 logical chunk: S1 202s (R5/R8 ✓) → S2 415s (span 23/5-classes, chunk 5 topics+summary) → S3 532s (15 Q/A/ctx+citations) → S4 157s (15 evals, dist {1.0:14, 0.0:1}). Deliverable `self-check-qa-results.json` produced. `_specs` configs target `gpt-oss:120b`; endpoint resolves from `$OLLAMA_HOST`/`--host`. **Full 24-doc, uncapped run → cluster** (local 20b too slow — §8 R7).
 **Companion plan:** `plans/plan-ollama-random-logical-pipeline.md`
 
 ---
@@ -72,12 +72,22 @@ Verified environment facts:
   directly; span-level must pass an explicit large `num_ctx` and provider.
 - langextract sends its `num_ctx=2048` in the request `options`, which **overrides the server's
   context length** (`OLLAMA_CONTEXT_LENGTH`). This deployment starts Ollama with `num_ctx=16384`
-  (standard for both local and cluster), so the native-`chat` chunk path and the `/v1` relevance
-  path inherit 16384 automatically — but the explicit `provider_kwargs.num_ctx=16384` on the
+  (standard for both local and cluster), so **three** Ollama paths inherit 16384 automatically —
+  the native-`chat` chunk path, the `/v1` relevance path, and the logical-grouping `ChatOllama`
+  path (`langchain_ollama` injects no 2048 default; that path also has no reasoning-suppression
+  knob — R5) — but the explicit `provider_kwargs.num_ctx=16384` on the
   langextract span path is **still mandatory** (it counteracts langextract's 2048 injection).
 - Ollama exposes an OpenAI-compatible API at `…/v1`; `openai.AsyncOpenAI(base_url, api_key="ollama")`
   works ⇒ minimal-diff relevance refactor preserving the existing `<json>`/`<scratchpad>` parser.
 - Local Ollama has `gpt-oss:20b` and `nomic-embed-text:latest` (no pulls needed).
+- `aisa/gen/providers.py:36-41,109-117` builds OpenAI+Google `CHAT_MODELS`/`EMBED_MODELS` at import
+  and raises `ValueError: Missing {KEY}` if `OPENAI_API_KEY`/`GOOGLE_API_KEY` are empty ⇒ **non-empty
+  keys are required to import `_nemo.py`** (it imports `aisa/gen`) even in all-Ollama mode (never
+  used for Ollama network calls). The standalone `extract_artifacts.py`/`generate-qa.py` do **not**
+  import `aisa/` and need no OpenAI/Gemini key in Ollama mode. Drives §7.2, §9 zero-egress proof.
+- `[llm].request_timeout` is **not** forwarded to `ChatOllama` (`aisa/gen/chat_llm.py:61-73`), so
+  `nemo_specs.toml`'s `request_timeout=2` is inert for the grouping path (no timeout risk, no action;
+  do not "fix" it into a real 2 s cap). That code path also has no reasoning-suppression knob (R5).
 
 ---
 
@@ -91,10 +101,13 @@ Verified environment facts:
   `self.relevance_model = chunk_cfg.get("relevance_model") or self.llm.cfg.model`.
 - **FR-1.3** When `relevance_filter` is on and `method == "random_logical"`: if
   `_is_ollama_model(self.relevance_model)`, construct
-  `AsyncOpenAI(base_url=chunk_cfg.get("ollama_base_url","http://localhost:11434/v1"),
-  api_key="ollama")` and SHALL NOT require `OPENAI_API_KEY`; otherwise retain the current OpenAI
-  construction (require `OPENAI_API_KEY`). The existing method-gating and "relevance_filter
-  ignored" log branch SHALL be preserved.
+  `AsyncOpenAI(base_url="http://localhost:11434/v1", api_key="ollama")` (literal — the
+  `ollama_base_url` config knob is dropped as scope creep; single local host). The relevance
+  *client* does not use `OPENAI_API_KEY`, **but** `aisa/gen/providers.py` still structurally
+  requires non-empty `OPENAI_API_KEY`/`GOOGLE_API_KEY` to import `_nemo.py` (§7.2) — the earlier
+  "SHALL NOT require OPENAI_API_KEY" framing was wrong. Otherwise retain the current OpenAI
+  construction. The existing method-gating and "relevance_filter ignored" log branch SHALL be
+  preserved.
 - **FR-1.4** `evaluate_chunks` SHALL call the model via `model=self.relevance_model` (replacing the
   hardcoded `"gpt-4o-mini"`). The `_JSON_BLOCK_RE`/`_SCRATCHPAD_BLOCK_RE` parsing,
   `RelevanceJudgment` validation, per-piece concurrency, on-disk `-relevance.json` caching, and the
@@ -123,12 +136,24 @@ Verified environment facts:
 - **FR-3.1** `PavementExtractor.__init__` SHALL select provider via `is_ollama_model(cfg.model)`;
   the `OPENAI_API_KEY` guard SHALL be gated to non-Ollama; `self.api_key` SHALL be `None` for
   Ollama. `ChunkLevelExtractor(cfg)` construction unchanged (self-routes).
-- **FR-3.2** `_extract_spans` Ollama branch SHALL call `lx.extract` with
-  `config=lx.factory.ModelConfig(model_id=cfg.model, provider="OllamaLanguageModel",
-  provider_kwargs={"model_url":cfg.ollama_host,"base_url":cfg.ollama_host,
-  "temperature":cfg.temperature,"num_ctx":cfg.ollama_num_ctx,"timeout":cfg.ollama_timeout})`,
-  passing `extraction_passes`, `max_char_buffer`, `show_progress=False`, and **no** `api_key`. The
-  span post-processing (bucketing/`SPAN_LEVEL_CLASSES` gating, lines 687-711) SHALL be unchanged.
+- **FR-3.2** (revised after smoke — the original `config=ModelConfig(provider=…)`
+  approach is **superseded**). Root cause: stock langextract's Ollama provider
+  always forces `payload['format']` (json/yaml grammar) on `/api/generate` with
+  no thinking suppression — `infer()` derives it from `format_type` (default
+  JSON) and `_ollama_query` re-derives it — so gpt-oss (Harmony reasoning) emits
+  chain-of-thought and **0 spans parse** (proven by ablation + first smoke).
+  `_extract_spans` Ollama branch SHALL instead construct a minimal
+  `OllamaLanguageModel` subclass `_OllamaSpanLM` that removes the forced format:
+  `__init__` sets `self.format_type=None`; `infer()` overridden to call
+  `_ollama_query(..., structured_output_format=None, ...)`. It SHALL call
+  `lx.extract(..., model=_OllamaSpanLM(model_id=cfg.model, base_url=cfg.ollama_host,
+  temperature=cfg.temperature, num_ctx=cfg.ollama_num_ctx, timeout=cfg.ollama_timeout),
+  extraction_passes=…, max_char_buffer=…, show_progress=False)` — **no** `api_key`,
+  **no** `config=`/`provider=`. `lx.extract(model=…)` takes precedence over all
+  other params and skips schema re-application, so the subclass is used as-is;
+  the prompt+`SPAN_LEVEL_EXAMPLES` elicit JSON that langextract's resolver parses
+  (verified: 7 valid spans vs 0). The span post-processing
+  (bucketing/`SPAN_LEVEL_CLASSES` gating) SHALL be unchanged.
 - **FR-3.3** The OpenAI branch SHALL remain the pre-existing call verbatim (incl.
   `api_key=self.api_key`). The 2-worker span/chunk `ThreadPoolExecutor` and per-call
   failure-isolation (`errors.{span,chunk}`) SHALL be unchanged.
@@ -154,6 +179,40 @@ Verified environment facts:
   `[artifact_extraction]`), with `input_dir = ./data/specs_20260516/doc-chunks_256_random_logical`,
   `model = "gpt-oss:20b"`, `extraction_passes = 1`, `chunk_concurrency = 1`, `ollama_*` keys.
 
+### FR-7 — Implementation invariants (from review)
+- **FR-7.1** The `LXConfig` field additions (FR-2.2) MUST land in the **same change** as
+  `extract_artifacts_specs.toml`'s `ollama_*` keys. `main()` does `LXConfig(**cfg.get("artifact_extraction", {}))`
+  (`extract_artifacts.py:828`); an `ollama_*` key without a matching dataclass field aborts with
+  `TypeError` before any extraction.
+- **FR-7.2** The duplicated `is_ollama_model`/`is_gpt`/`is_gemini` trio in `extract_artifacts.py`
+  MUST stay byte-identical to `generate-qa.py:171-185` (add a code comment to that effect); the two
+  copies drifting silently desyncs stage-2 from stage-3 routing.
+- **FR-7.3** Regression invariant: default `LXConfig.model = "gpt-4o-mini"` (no colon, starts
+  "gpt") keeps the OpenAI branch; only a colon-bearing model id flips to Ollama. This is what keeps
+  the existing `extract_artifacts.toml`/techbriefs runs on OpenAI — do not change the default.
+
+### FR-8 — Cluster endpoint portability (added post-smoke)
+The cluster slurm jobs run Ollama at `OLLAMA_HOST=http://127.0.0.1:$PORT` (dynamic
+port) and pass `--host localhost --port $PORT` to scripts. To make the same
+`_specs` configs work local **and** cluster:
+- **FR-8.1** `extract_artifacts.py` SHALL add `--host`/`--port` CLI and a
+  `_resolve_ollama_host()` with precedence **CLI > `[artifact_extraction].ollama_host`
+  > `$OLLAMA_HOST` > `http://localhost:11434`** (scheme auto-prepended). `LXConfig.ollama_host`
+  default → `None`; `main(..., ollama_host=)` resolves it once and both the chunk
+  `OllamaClient` and `_OllamaSpanLM` use the resolved value.
+- **FR-8.2** `_nemo.py` relevance client SHALL derive its base URL from
+  `$OLLAMA_HOST` (else `http://localhost:11434`) + `/v1` (grouping `ChatOllama`
+  and `ollama_api` already honor `$OLLAMA_HOST` via the `ollama` lib).
+- **FR-8.3** `extract_artifacts_specs.toml` SHALL **omit** `ollama_host` so it
+  resolves from `$OLLAMA_HOST` on the cluster and localhost otherwise.
+- **FR-8.4** The four `_specs` configs (`cfg/nemo_specs.toml` `[llm].model`,
+  `extract_artifacts_specs.toml`, `generate-qa_specs.toml`,
+  `self-check/self-check-qa_specs.toml`) target `gpt-oss:120b` (cluster), with
+  the `:20b` local-debug alt in a trailing `#`-comment, and cluster-tuned
+  concurrency (`chunk_concurrency=8`, `max_concurrent_questions=16` vs
+  `OLLAMA_NUM_PARALLEL=16`). **Out of scope (user-deferred):** new slurm jobs for
+  stage 1 (`_nemo.py --sdg-logical`) and stage 2 (`extract_artifacts.py`).
+
 ---
 
 ## 4. External Interfaces
@@ -172,16 +231,20 @@ Verified environment facts:
 
 ## 5. Configuration Schema (effective values)
 
+New `_specs` configs MUST be created by copying the existing sibling toml **verbatim** and changing
+only the rows below. The scripts read several other required keys via direct subscript
+(`output_file`, `output_csv_file`, `question_generate_prompt`, `extract_citation_prompt`,
+`prompt_eval`, `intermediate_json`, …) — omitting them raises `KeyError` at startup.
+
 | File | Key | Value |
 |---|---|---|
-| `cfg/nemo_specs.toml` | `[general].data_dir` | `./rawdata-pubs/parsed-specs` (unchanged; user renames dir) |
+| `cfg/nemo_specs.toml` | `[general].data_dir` | `./rawdata-pubs/parsed-specs` (rename already applied — verify 24 files) |
 | | `[general].output_dir` | `./data/specs_20260516` |
 | | `[llm].model` | `gpt-oss:20b` |
 | | `[chunking].method` | `random_logical` |
 | | `[chunking].relevance_filter` | `true` |
 | | `[chunking].relevance_concurrency` | `2` (was 8) |
-| | `[chunking].relevance_model` *(opt.)* | defaults to `[llm].model` |
-| | `[chunking].ollama_base_url` *(opt.)* | `http://localhost:11434/v1` |
+| | `[chunking].relevance_model` *(opt.)* | defaults to `[llm].model` (kept; `ollama_base_url` knob dropped) |
 | `extract_artifacts_specs.toml` | `[paths].input_dir` | `./data/specs_20260516/doc-chunks_256_random_logical` |
 | | `[artifact_extraction].model` | `gpt-oss:20b` |
 | | `…extraction_passes` | `1` |
@@ -190,7 +253,7 @@ Verified environment facts:
 | `generate-qa_specs.toml` | `chunk_dir` | `./data/specs_20260516/doc-chunks_256_random_logical` |
 | | `output_dir` | `./data/specs_20260516/qa-gen` |
 | | `model_qa`, `model_citations` | `gpt-oss:20b` |
-| `self-check/self-check-qa_specs.toml` | `input_qa_json` | `../data/specs_20260516/qa-gen/generated-questions.json` |
+| `self-check/self-check-qa_specs.toml` | `input_qa_json` | `../data/specs_20260516/qa-gen/generated-questions.json` — resolved relative to `self-check/` (stage-4 runs with CWD there); MUST be the WITH-context file, not `_wo_context` (self-check needs `context_text`) |
 | | `model` | `gpt-oss:20b` |
 | | `output_*` | `./self-check-output-specs/…` |
 | | `max_concurrent_questions` | `4` |
@@ -215,15 +278,38 @@ Stage `_nemo.py --sdg-logical` runs `path2chunks` then `_build_logical_contexts`
 
 ## 7. Prerequisites / Assumptions
 
-1. User renames `rawdata-pub` → `rawdata-pubs` so `./rawdata-pubs/parsed-specs/` holds the 24
-   `PUB242C09_*.md`. (As-is, `_nemo.py` finds no `.md` and returns.)
-2. Ollama server running; `gpt-oss:20b` and `nomic-embed-text:latest` pulled (verified present).
-   Ollama must stay reachable for the whole run (`_nemo.py` import constructs `Embedder` →
-   `ollama_api.list_models()` → `exit()` if down, even though `--sdg-logical` never embeds).
-   Ollama is started with context length **16384** (the deployment standard, local & cluster); the
-   explicit `num_ctx` values in §5 match this. Native-`chat` and `/v1` relevance paths inherit the
-   server default; the langextract span path requires the explicit override (see §2, §8 R1).
-3. Interpreter: `.venv/bin/python`.
+1. **Corpus present (verify — already done):** `./rawdata-pubs/parsed-specs/*.md` resolves to the
+   24 `PUB242C09_*.md` (the `rawdata-pub`→`rawdata-pubs` rename has been applied; singular
+   `rawdata-pub` no longer exists). If absent, `_nemo.py` globs nothing and **returns exit 0 silently**
+   — §9 makes the 24-file count a hard gate, not a step.
+2. **API keys structurally required at import (even all-Ollama).** `aisa/gen/providers.py:36-41,
+   109-117` builds OpenAI+Google `CHAT_MODELS`/`EMBED_MODELS` at import; `BaseInfo` raises if
+   `OPENAI_API_KEY`/`GOOGLE_API_KEY` empty. So **`_nemo.py` (stage 1) only** needs **non-empty**
+   `OPENAI_API_KEY` and `GOOGLE_API_KEY` in env/`.env` to *import* (it imports `aisa/gen`); values
+   are **never used for network calls** under Ollama. The standalone `extract_artifacts.py`/
+   `generate-qa.py` (no `aisa/` import) need no OpenAI/Gemini key in Ollama mode. Blanking the keys
+   breaks the stage-1 import, so the §9 zero-egress proof uses *bogus-but-non-empty* keys, not
+   blank. `.env` currently has live keys.
+3. **Ollama** running, started with `num_ctx=16384` (deployment standard, local & cluster);
+   `gpt-oss:20b` + `nomic-embed-text:latest` present (verified — no pulls). Must stay reachable for
+   the whole run: `_nemo.py main()` constructs `BaseLLM` (→ `check_existing_model("gpt-oss:20b")` →
+   `exit()` if absent) and `Embedder` (→ `ollama_api.list_models()` → `exit()` if Ollama down) even
+   though `--sdg-logical` never embeds; `nomic-embed-text:latest` must appear in `ollama list` so
+   the runtime `Embedder` routes to the Ollama provider instead of attempting a HuggingFace load.
+4. **Import-time HF model.** `_nemo.py:130` default-arg `Embedder(EmbedConfig())` is evaluated at
+   class-body execution → builds `HuggingFaceEmbeddings("sentence-transformers/all-MiniLM-L6-v2")`
+   (HF construction in `aisa/gen/embed.py:42`; default model string `embed.py:21`);
+   that model must be in the local HF cache or network-reachable at import (libs installed per
+   `reqs.txt`; only the weights are the open risk).
+5. Interpreter: `.venv/bin/python`. Native-`chat`/`/v1` paths inherit the 16384 server default;
+   the langextract span path requires the explicit `num_ctx` override (§2, §8 R1).
+6. **Cluster:** slurm exports `OLLAMA_HOST=http://127.0.0.1:$PORT` (dynamic) and
+   `OLLAMA_CONTEXT_LENGTH=32768`/`OLLAMA_NUM_PARALLEL=16`. Per FR-8 the configs/code resolve the
+   endpoint from `$OLLAMA_HOST` (or `--host/--port`), so no per-job port edit is needed. Local: no
+   `$OLLAMA_HOST` → defaults to `http://localhost:11434`.
+7. Disk: negligible — per-doc intermediates (`-chunks`/`-logic-chunks`/`-relevance`/`-logic-ctx`/
+   `-logic-artifacts`) + QA + self-check JSON for 24 docs total ~tens of MB (negligible — not a
+   tracked risk).
 
 ---
 
@@ -231,36 +317,58 @@ Stage `_nemo.py --sdg-logical` runs `path2chunks` then `_build_logical_contexts`
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | langextract span truncation: its provider injects `num_ctx=2048` into request `options`, **overriding the 16384 server default** ⇒ span prompt + 3 large examples silently truncated, empty extractions | Always pass `num_ctx=16384` via `provider_kwargs` (mandatory despite the 16384 server default — counteracts langextract's 2048 injection); native-`chat`/`/v1` paths already inherit 16384; smoke test asserts non-empty `extractions` |
-| R2 | `gpt-oss:20b` reasoning-token pollution | Chunk path + stages 3/4 use `think=False`. Span path (langextract `/api/generate`, no think) and relevance (`/v1`) have graceful fallbacks (tolerant parser; `except → score=1.0`). If smoke test breaks, add "output only JSON, no preamble" to span/relevance prompts |
-| R3 | Single local GPU serializes concurrent calls ⇒ latency/timeouts | `chunk_concurrency=1`, `extraction_passes=1`, `relevance_concurrency=2`, `max_concurrent_questions=4`, `ollama_timeout=600` |
-| R4 | Deep nested `ChunkSignals` schema on a 20B model | Ollama `format=<schema>` grammar-constrains decoding; `ollama_retries` + existing soft topic clamp. Flatten-schema only as contingency if repeated `$ref` validation failures observed |
-| R5 | Stage-1 grouping output (`{"split_after":[…]}`) malformed under reasoning model | `ChatOllama(format="json")` constrains; `_llm_split_decisions` already falls back to window-end splits on bad/empty response (degrade, not crash) |
-| R6 | `lx.factory`/provider-name resolution | Validate `lx.factory.ModelConfig` reachability + `provider="OllamaLanguageModel"` resolves (one-line probe before full run) |
+| R1 | langextract span truncation: provider injects `num_ctx=2048` into request `options`, **overriding the 16384 server default** ⇒ span prompt + 3 large examples silently truncated, empty extractions | Always pass `num_ctx=16384` via `provider_kwargs` (mandatory despite the server default); native-`chat`/`/v1` inherit 16384; §9 asserts non-empty `extractions` |
+| R2 | gpt-oss (Harmony reasoning — **20b AND 120b**) CoT pollution. **Materialized in smoke:** langextract's stock Ollama provider hardcodes `payload['format']` on `/api/generate` with no thinking suppression ⇒ gpt-oss emits CoT, **0 spans parsed**. Prompt-tightening proven *insufficient* (grammar-level, not prompt-level). Architectural & size-independent — same on cluster 120b. | **Resolved (FR-3.2):** `_OllamaSpanLM` subclass strips the forced `format`; clean JSON → 7 valid spans (ablation + smoke verified). Chunk-level + stages 3/4 + relevance use native `think=False`/tolerant parsers and were unaffected. |
+| R3 | Single local GPU serializes calls ⇒ latency/timeouts | `chunk_concurrency=1`, `extraction_passes=1`, `relevance_concurrency=2`, `max_concurrent_questions=4`, `ollama_timeout=600` |
+| R4 | Deep nested `ChunkSignals` schema on 20B (adherence + latency) | Ollama `format=<schema>` grammar-constrains output (slow on 20B — latency folds into R7); `ollama_retries` + soft topic clamp; flatten-schema only if repeated `$ref` failures |
+| R5 | **Silent grouping collapse:** `request_timeout=2` is inert for `ChatOllama` (not forwarded — confirmed), but reasoning pollution can make `_validate_split_response` return `[]` for every window ⇒ logical chunks silently collapse to recursive windows while files still write | `ChatOllama(format="json")` + window-end fallback prevents a crash; **§9 asserts logical-chunk count ≠ raw recursive-piece count** and greps for fallback log lines so total collapse *fails* acceptance |
+| R6 | langextract provider wiring | **Resolved/obsoleted:** span path no longer uses `provider=`/`config=` resolution — FR-3.2 passes a constructed `_OllamaSpanLM` via `lx.extract(model=…)`. The `resolve_provider` lazy-registry caveat is moot. Verified end-to-end in §9 smoke. |
+| R7 | **Unbounded wall-clock** confirmed materially severe. **Measured (local `gpt-oss:20b`, 1 doc CH01 ≈ 8 KB → 9 recursive pieces / 4 logical chunks):** stage 1 ≈ **203 s**; stage 2 ≈ **1400 s** (~23 min, span 1-pass + chunk schema ×4); stage 3 not completed locally (12 bounded QA tasks alone projected ≥30 min) — user stopped local run to use the cluster. Largest chapters are ~13× CH01 ⇒ full 24-doc on local 20b ≈ many hours/overnight (confirmed). | Cluster (`gpt-oss:120b`, real GPU) is the intended venue for the full run; per-stage numbers above are the local-20b baseline. Re-measure stage 1–4 per-doc on the cluster before the 24-doc launch so a long run isn't mistaken for a hang. |
+| R8 | **Silent keep-all relevance:** `evaluate_chunks` per-call `except→score=1.0` + `path2chunks` `except→keep-all` ⇒ a broken Ollama relevance path yields a green run with the filter silently off (defeats the reason to refactor vs. disable) | §9 asserts `-relevance.json` has ≥1 `score != 1.0` **and** the run log has no `relevance filter failed` / `defaulting to score=1.0` |
+| R9 | Resume granularity is **per-doc**, not per-context; a kill/timeout mid-doc re-does that doc; `overwrite=False` is the only mode (no CLI flag) | Documented expectation; to redo a degraded doc, delete its `-logic-*`/`-artifacts` file — cache does not self-heal |
+| R10 | Non-determinism: `temperature=0` but Ollama/`gpt-oss:20b` not bit-deterministic ⇒ questions/scores vary run-to-run | Acceptance is shape/existence-based (not value-based) by design; stated so a differing re-run is not treated as a regression |
 
 ---
 
 ## 9. Acceptance Criteria / Test Plan
 
-**Pre-flight:** `ls rawdata-pubs/parsed-specs/*.md | wc -l` → 24;
-`.venv/bin/python extract_artifacts.py -h` / `generate-qa.py -h` confirm config flags.
+**Hard gate (must pass or stop):** `ls rawdata-pubs/parsed-specs/*.md | wc -l` == 24. Confirm CLI
+flags via `-h`: `extract_artifacts.py --cfg`, `generate-qa.py --config`, `self-check-qa.py --config`.
 
-**Smoke test (1 doc; stages are idempotent so a single-doc subset suffices):**
-1. `.venv/bin/python _nemo.py --sdg-logical --cfg cfg/nemo_specs.toml` → `{doc}-logic-ctx.json`
-   exists, sane logical-chunk count; `{doc}-relevance.json` scored 0/0.5/1 (relevance ran on Ollama,
-   no OpenAI call).
-2. `.venv/bin/python extract_artifacts.py --cfg extract_artifacts_specs.toml` →
-   `{doc}-logic-artifacts.json` with `errors.chunk` null + schema-valid `chunk_signals`,
-   `errors.span` null + non-empty `extractions` (empty ⇒ R1/R2 — raise `ollama_num_ctx` / tighten
-   prompt).
-3. `.venv/bin/python generate-qa.py --config generate-qa_specs.toml` → `generated-questions.json`
-   with non-empty Q/A/context.
-4. `cd self-check && .venv/bin/python self-check-qa.py --config ./self-check-qa_specs.toml` →
-   `self-check-output-specs/self-check-qa-results.json` with per-record `evaluation ∈ {0,0.5,1}`.
+**Zero-egress proof (mandatory invocation condition).** Do **not** blank the keys — that breaks
+import (§7.2). Run every smoke stage with **bogus but non-empty** keys:
+`env OPENAI_API_KEY=sk-bogus-zero-egress GOOGLE_API_KEY=bogus .venv/bin/python …`. The import gate
+passes; any *actual* OpenAI/Gemini call fails loudly (401/invalid) instead of silently billing the
+real `.env` keys; Ollama paths are unaffected. **Success under bogus keys IS the zero-egress proof.**
 
-**Acceptance:** all four stages complete with **zero OpenAI/Gemini network calls**; the deliverable
-JSON contains evaluated questions for the smoke doc. **Full run:** repeat without the subset over
-all 24 docs (re-running resumes via file cache).
+**1-doc subset (no `--limit` exists for stages 1–3).** Isolate one doc and override input via CLI
+(no toml edit): `mkdir -p /tmp/specs-smoke && cp rawdata-pubs/parsed-specs/<one>.md /tmp/specs-smoke/`
+then run stage 1 with `--input_dir /tmp/specs-smoke` (`_nemo.py:847-848` override). Keep
+`output_dir = ./data/specs_20260516` so stages 2–4 (which glob the chunk_dir) process just that doc
+and the later full run reuses the cache. **Precondition:**
+`./data/specs_20260516/doc-chunks_256_random_logical/` must be empty/absent before the smoke run,
+else stage-2 globs any pre-existing `*-logic-ctx.json` too.
+
+**Smoke test (1 doc; wrap each stage with wall-clock — `/usr/bin/time -l` or `date` bracketing):**
+1. stage 1 (`_nemo.py --sdg-logical --cfg cfg/nemo_specs.toml --input_dir /tmp/specs-smoke`) →
+   `{doc}-logic-ctx.json` exists; **logical-chunk count ≠ recursive-piece count** in
+   `{doc}-chunks.json` (grouping ran — R5); `{doc}-relevance.json` has ≥1 `score != 1.0` and the log
+   has **no** `relevance filter failed` / `defaulting to score=1.0` (filter ran on Ollama — R8).
+2. stage 2 (`extract_artifacts.py --cfg extract_artifacts_specs.toml`) → `{doc}-logic-artifacts.json`
+   with `errors.chunk` null + schema-valid `chunk_signals`; `errors.span` null + **non-empty**
+   `extractions` (empty ⇒ R1/R2 — raise `ollama_num_ctx`/tighten prompt, then **delete the file**
+   before re-run — cache won't self-heal, R9).
+3. stage 3 (`generate-qa.py --config generate-qa_specs.toml`) → `generated-questions.json` with
+   non-empty Q/A/`context_text`.
+4. `cd self-check && self-check-qa.py --config ./self-check-qa_specs.toml` →
+   `self-check-output-specs/self-check-qa-results.json`, per-record `evaluation ∈ {0,0.5,1}`.
+
+**Acceptance:** all four stages complete **under bogus keys** (zero OpenAI/Gemini egress); the R5 and
+R8 assertions pass; deliverable JSON has evaluated questions for the smoke doc. Record per-stage
+seconds and **publish the 24-doc projection in §8 R7** before launching the full run.
+
+**Full run:** stage 1 *without* `--input_dir` (re-globs all 24; the smoke doc is a cache-hit via
+`-logic-chunks.json`/`-logic-ctx.json` existence); stages 2–4 re-run and resume per-doc.
 
 ---
 

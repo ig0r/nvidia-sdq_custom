@@ -33,6 +33,8 @@ from typing import Literal
 from dotenv import load_dotenv
 from loguru import logger
 import langextract as lx
+import langextract.providers.ollama as _lx_ollama
+from ollama import Client as OllamaClient
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -47,6 +49,44 @@ for _name, _no, _icon in (("CHUNK", 14, "📦"), ("NLP", 10, "🧠")):
         logger.level(_name, no=_no, icon=_icon)
     except (TypeError, ValueError):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Model routing (gpt-* / gemini-* / ollama).
+# Keep byte-identical to generate-qa.py:171-185 (SRS FR-7.2); if one changes,
+# change both — the two copies must not drift.
+# ---------------------------------------------------------------------------
+
+def is_ollama_model(model: str) -> bool:
+    # Ollama identifiers use `name:tag` (e.g. "qwen3:4b", "gpt-oss:120b",
+    # "hf.co/owner/repo:tag"). OpenAI and Gemini model IDs never use a colon,
+    # so this is the unambiguous signal and it dominates prefix-based checks.
+    if ":" in model:
+        return True
+    return not (model.startswith("gpt") or model.startswith("gemini"))
+
+
+def is_gpt(model: str) -> bool:
+    return model.startswith("gpt") and not is_ollama_model(model)
+
+
+def is_gemini(model: str) -> bool:
+    return model.startswith("gemini") and not is_ollama_model(model)
+
+
+def _resolve_ollama_host(cli_host: str | None, cfg_host: str | None) -> str:
+    """Ollama endpoint precedence: CLI (--host/--port) > config
+    [artifact_extraction].ollama_host > $OLLAMA_HOST (cluster slurm exports it)
+    > http://localhost:11434. Used by both the chunk client and _OllamaSpanLM."""
+    h = (
+        cli_host
+        or cfg_host
+        or os.environ.get("OLLAMA_HOST")
+        or "http://localhost:11434"
+    )
+    if not h.startswith(("http://", "https://")):
+        h = f"http://{h}"
+    return h
 
 
 SPAN_LEVEL_CLASSES: list[str] = [
@@ -587,6 +627,12 @@ class LXConfig:
     prompt_name: str = "nemo_logic-artifacts-04-span"        # span-level (langextract)
     chunk_prompt_name: str = "nemo_logic-artifacts-04-chunk" # chunk-level (OpenAI Structured Outputs)
     prompt_lib: str = "./prompts"
+    # Ollama path (selected when is_ollama_model(model), e.g. "gpt-oss:20b/120b"). SRS FR-2.2.
+    # ollama_host resolved in main(): CLI --host/--port > toml > $OLLAMA_HOST > localhost.
+    ollama_host: str | None = None
+    ollama_num_ctx: int = 16384
+    ollama_timeout: int = 600
+    ollama_retries: int = 3
 
 
 class ChunkLevelExtractor:
@@ -597,34 +643,41 @@ class ChunkLevelExtractor:
 
     def __init__(self, cfg: LXConfig):
         self.cfg: LXConfig = cfg
-        api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
-            )
+        self.is_ollama: bool = is_ollama_model(cfg.model)
         prompt_path: Path = Path(cfg.prompt_lib) / f"{cfg.chunk_prompt_name}.txt"
         if not prompt_path.exists():
             raise FileNotFoundError(f"Chunk prompt not found: {prompt_path}")
         self.system_prompt: str = prompt_path.read_text(encoding="utf-8")
-        # max_retries=5 (default 2) absorbs burst 429s under v5 thread concurrency.
-        self.client: OpenAI = OpenAI(api_key=api_key, max_retries=5)
+        if self.is_ollama:
+            self.client = OllamaClient(host=cfg.ollama_host)
+        else:
+            api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
+                )
+            # max_retries=5 (default 2) absorbs burst 429s under v5 thread concurrency.
+            self.client = OpenAI(api_key=api_key, max_retries=5)
 
     def extract(self, text: str, doc_id: str, chunk_id: int) -> ChunkSignals:
-        completion = self.client.beta.chat.completions.parse(
-            model=self.cfg.model,
-            temperature=self.cfg.temperature,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": text},
-            ],
-            response_format=ChunkSignals,
-        )
-        signals: ChunkSignals | None = completion.choices[0].message.parsed
-        if signals is None:
-            raise RuntimeError(
-                f"OpenAI returned no parsed ChunkSignals "
-                f"(refusal: {completion.choices[0].message.refusal!r})"
+        if self.is_ollama:
+            signals: ChunkSignals = self._extract_ollama(text, doc_id, chunk_id)
+        else:
+            completion = self.client.beta.chat.completions.parse(
+                model=self.cfg.model,
+                temperature=self.cfg.temperature,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                response_format=ChunkSignals,
             )
+            signals = completion.choices[0].message.parsed
+            if signals is None:
+                raise RuntimeError(
+                    f"OpenAI returned no parsed ChunkSignals "
+                    f"(refusal: {completion.choices[0].message.refusal!r})"
+                )
         # Soft validation of topics quantity rule (1-5 expected).
         n_topics: int = len(signals.topics)
         if n_topics == 0:
@@ -640,6 +693,80 @@ class ChunkLevelExtractor:
             signals.topics = signals.topics[:5]
         return signals
 
+    def _extract_ollama(self, text: str, doc_id: str, chunk_id: int) -> ChunkSignals:
+        """Ollama chunk-level via the native client: grammar-constrained JSON
+        (format=<schema>) + think=False (gpt-oss is a reasoning model). Retries
+        on validation/transport errors; raises on exhaustion (preserves the
+        orchestrator's raise-on-failure contract)."""
+        schema = ChunkSignals.model_json_schema()
+        last_exc: Exception | None = None
+        for attempt in range(1, self.cfg.ollama_retries + 1):
+            try:
+                resp = self.client.chat(
+                    model=self.cfg.model,
+                    messages=[
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    options={
+                        "temperature": self.cfg.temperature,
+                        "num_ctx": self.cfg.ollama_num_ctx,
+                    },
+                    format=schema,
+                    think=False,
+                )
+                content = (
+                    resp["message"]["content"]
+                    if isinstance(resp, dict)
+                    else resp.message.content
+                )
+                return ChunkSignals.model_validate_json(content)
+            except Exception as exc:  # pydantic ValidationError + ollama errors
+                last_exc = exc
+                logger.log(
+                    "NLP",
+                    f"{doc_id} chunk {chunk_id}: ollama attempt "
+                    f"{attempt}/{self.cfg.ollama_retries} failed: {exc}",
+                )
+        raise RuntimeError(
+            f"Ollama ChunkSignals failed after {self.cfg.ollama_retries} "
+            f"attempts: {last_exc}"
+        )
+
+
+class _OllamaSpanLM(_lx_ollama.OllamaLanguageModel):
+    """langextract Ollama model with the hardcoded response `format` removed.
+
+    Stock langextract always sends ``format: json|yaml`` on ``/api/generate`` and
+    never suppresses thinking. gpt-oss (Harmony reasoning — 20b *and* 120b) then
+    emits chain-of-thought instead of JSON under that grammar, so 0 spans parse.
+    With the forced grammar removed, the prompt + few-shot examples elicit clean
+    JSON that langextract's resolver parses normally (ablation-verified: 6–7
+    valid spans vs 0). Passed via ``lx.extract(model=...)`` so langextract uses
+    it as-is and does not re-apply schema constraints. OpenAI span path unchanged.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Stop _ollama_query() re-deriving a forced format from self.format_type.
+        self.format_type = None
+
+    def infer(self, batch_prompts, **kwargs):
+        combined = self.merge_kwargs(kwargs)
+        for prompt in batch_prompts:
+            resp = self._ollama_query(
+                prompt=prompt,
+                model=self._model,
+                structured_output_format=None,  # → no payload['format']
+                model_url=self._model_url,
+                **combined,
+            )
+            yield [
+                _lx_ollama.core_types.ScoredOutput(
+                    score=1.0, output=resp["response"]
+                )
+            ]
+
 
 class PavementExtractor:
     """Per-chunk orchestrator. Span-level via langextract; chunk-level via ChunkLevelExtractor.
@@ -650,12 +777,16 @@ class PavementExtractor:
 
     def __init__(self, cfg: LXConfig):
         self.cfg: LXConfig = cfg
-        api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
-            )
-        self.api_key: str = api_key
+        self.is_ollama: bool = is_ollama_model(cfg.model)
+        if self.is_ollama:
+            self.api_key: str | None = None
+        else:
+            api_key: str | None = cfg.api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY not set (env or [artifact_extraction].api_key in cfg)"
+                )
+            self.api_key = api_key
         prompt_path: Path = Path(cfg.prompt_lib) / f"{cfg.prompt_name}.txt"
         if not prompt_path.exists():
             raise FileNotFoundError(f"Span prompt not found: {prompt_path}")
@@ -673,17 +804,39 @@ class PavementExtractor:
     def _extract_spans(
         self, text: str, doc_id: str, chunk_id: int, u_ctx_id: str
     ) -> dict[str, list[dict]]:
-        result = lx.extract(
-            text_or_documents=text,
-            prompt_description=self.prompt_span,
-            examples=SPAN_LEVEL_EXAMPLES,
-            model_id=self.cfg.model,
-            api_key=self.api_key,
-            temperature=self.cfg.temperature,
-            extraction_passes=self.cfg.extraction_passes,
-            max_char_buffer=self.cfg.max_char_buffer,
-            show_progress=False,
-        )
+        if self.is_ollama:
+            # Our subclass strips langextract's forced `format` grammar (the
+            # gpt-oss reasoning collision — SRS R2). Passed via model= so
+            # langextract uses it as-is. num_ctx counteracts langextract's
+            # 2048 default (SRS R1).
+            span_lm = _OllamaSpanLM(
+                model_id=self.cfg.model,
+                base_url=self.cfg.ollama_host,
+                temperature=self.cfg.temperature,
+                num_ctx=self.cfg.ollama_num_ctx,
+                timeout=self.cfg.ollama_timeout,
+            )
+            result = lx.extract(
+                text_or_documents=text,
+                prompt_description=self.prompt_span,
+                examples=SPAN_LEVEL_EXAMPLES,
+                model=span_lm,
+                extraction_passes=self.cfg.extraction_passes,
+                max_char_buffer=self.cfg.max_char_buffer,
+                show_progress=False,
+            )
+        else:
+            result = lx.extract(
+                text_or_documents=text,
+                prompt_description=self.prompt_span,
+                examples=SPAN_LEVEL_EXAMPLES,
+                model_id=self.cfg.model,
+                api_key=self.api_key,
+                temperature=self.cfg.temperature,
+                extraction_passes=self.cfg.extraction_passes,
+                max_char_buffer=self.cfg.max_char_buffer,
+                show_progress=False,
+            )
         bucketed: dict[str, list[dict]] = {}
         ext_idx: int = 0
         for ext in (result.extractions or []):
@@ -798,7 +951,7 @@ def _resolve_input_dir(cfg: dict) -> Path:
     return candidates[0]
 
 
-def main(cfg: dict, overwrite: bool = False) -> None:
+def main(cfg: dict, overwrite: bool = False, ollama_host: str | None = None) -> None:
     # If [chunking].method is present (cfg/nemo.toml shape), enforce mode 3.
     # If absent (extract_artifacts.toml shape), mode 3 is implied.
     method: str = cfg.get("chunking", {}).get("method", "random_logical")
@@ -826,6 +979,7 @@ def main(cfg: dict, overwrite: bool = False) -> None:
         return
 
     lx_cfg: LXConfig = LXConfig(**cfg.get("artifact_extraction", {}))
+    lx_cfg.ollama_host = _resolve_ollama_host(ollama_host, lx_cfg.ollama_host)
     extractor: PavementExtractor = PavementExtractor(lx_cfg)
 
     for ctx_path in ctx_files:
@@ -926,7 +1080,15 @@ if __name__ == "__main__":
                         help="Override the directory containing *-logic-ctx.json")
     parser.add_argument("--overwrite", action="store_true",
                         help="Force regeneration of cached -logic-artifacts.json")
+    parser.add_argument("--host", type=str, default=None,
+                        help="Ollama host (Ollama models). Overrides config / $OLLAMA_HOST. "
+                             "Cluster slurm pattern: --host localhost --port $PORT")
+    parser.add_argument("--port", type=int, default=None, help="Ollama port (Ollama models).")
     args = parser.parse_args()
+
+    cli_ollama_host = None
+    if args.host or args.port:
+        cli_ollama_host = f"http://{args.host or 'localhost'}:{args.port or 11434}"
 
     with open(args.cfg, "rb") as f:
         cfg = tomllib.load(f)
@@ -941,4 +1103,4 @@ if __name__ == "__main__":
             f"For mode 'logical', use --sdg instead."
         )
 
-    main(cfg, overwrite=args.overwrite)
+    main(cfg, overwrite=args.overwrite, ollama_host=cli_ollama_host)

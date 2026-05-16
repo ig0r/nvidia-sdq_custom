@@ -1,0 +1,28 @@
+# Specs-corpus config for extract_artifacts.py — local Ollama (gpt-oss:20b).
+# Companion spec: plans/srs-ollama-random-logical-pipeline.md (FR-6.3).
+#
+# MUST use the [paths] + [artifact_extraction] shape — do NOT point the script
+# at cfg/nemo_specs.toml: it has [langextract] without [artifact_extraction] and
+# extract_artifacts.py:main() would raise KeyError.
+
+[paths]
+input_dir = "./data/specs_20260516/doc-chunks_256_random_logical"
+
+[artifact_extraction]
+model = "gpt-oss:120b"#"gpt-oss:20b"           # cluster=120b; local debug=20b
+temperature = 0.0
+extraction_passes = 1                          # 1 pass (SRS R5: each pass = full round-trip); raise for more recall
+chunk_concurrency = 8                           # cluster OLLAMA_NUM_PARALLEL=16; use 1 for single local GPU (SRS R3)
+max_char_buffer = 10000                        # disables internal langextract sub-chunking
+prompt_name = "nemo_logic-artifacts-04-span"        # span-level (langextract Ollama provider)
+chunk_prompt_name = "nemo_logic-artifacts-04-chunk" # chunk-level (ollama client, format=schema)
+prompt_lib = "./prompts"
+# Ollama path (FR-2.2). ollama_num_ctx counteracts langextract's 2048 default (SRS R1).
+# ollama_host intentionally OMITTED: extract_artifacts.py resolves it
+#   CLI --host/--port  >  this key (if set)  >  $OLLAMA_HOST  >  http://localhost:11434
+# The cluster slurm exports OLLAMA_HOST=http://127.0.0.1:$PORT, so leaving this
+# unset makes the same config work on both cluster and localhost. Set it only to
+# pin a fixed endpoint.
+ollama_num_ctx = 16384
+ollama_timeout = 600
+ollama_retries = 3

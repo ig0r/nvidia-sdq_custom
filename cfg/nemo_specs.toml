@@ -42,7 +42,7 @@ edge_pruning_value = 15                 # k for top_k (top X), or percentile thr
 # MODEL SETTINGS
 [llm]
 json_mode = true
-model = "gpt-oss:20b"#"gpt-4o-mini"    # ["gemini-2.0-flash", "gpt-4o-mini", "gemma3:4b", "qwen3:4b"]
+model = "gpt-oss:120b"#"gpt-oss:20b"#"gpt-4o-mini"    # cluster=120b; local debug=20b. (relevance_model derives from this)
 request_timeout = 2
 temperature = 0.0
 max_tokens = 4000
@@ -71,7 +71,7 @@ hybrid_window = 8              # recursive pieces per LLM call (random_logical o
 hybrid_stride = 6              # slide amount (random_logical only, <= hybrid_window)
 # relevance filter (random_logical only): per-piece eval against prompts/nemo_eval-02.txt before logical grouping
 relevance_filter = true        # enable/disable; only honored when method == "random_logical"; OPENAI_API_KEY required when on
-relevance_concurrency = 8      # bounds in-flight per-piece eval calls (any positive int)
+relevance_concurrency = 2      # lowered for single local GPU (SRS R3); was 8 (cloud default)
 
 # LANGEXTRACT (Step 2 of mode-3 logical flow; consumed only by extract_artifacts.py)
 [langextract]

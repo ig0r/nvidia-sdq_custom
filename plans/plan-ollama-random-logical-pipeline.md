@@ -1,7 +1,7 @@
 # Plan: Ollama support for the whole `random_logical` pipeline (local debug, `gpt-oss:20b`)
 
 **Companion SRS:** `plans/srs-ollama-random-logical-pipeline.md`
-**Status:** Proposed
+**Status:** Proposed — revised after 3-agent review (see SRS §8 R7–R10, §9 zero-egress proof, §3 FR-7)
 **Target:** local Ollama `gpt-oss:20b` @ `http://localhost:11434`; corpus `./rawdata-pubs/parsed-specs`; output `./data/specs_20260516`
 
 ## Why
@@ -30,9 +30,10 @@ Ollama-native (config only); two code paths are hard-bound to OpenAI and must be
 
 - Add module helper `_is_ollama_model(model)` — colon-rule mirroring `generate-qa.py:171-185`.
 - `QAGenerator.__init__` (~164-182): `self.relevance_model = chunk_cfg.get("relevance_model") or
-  self.llm.cfg.model`; if Ollama → `self.eval_client = AsyncOpenAI(base_url=
-  chunk_cfg.get("ollama_base_url","http://localhost:11434/v1"), api_key="ollama")` (no
-  `OPENAI_API_KEY`); else existing OpenAI behavior. Keep mode/`filter_on` gating + ignore-log branch.
+  self.llm.cfg.model`; if Ollama → `self.eval_client = AsyncOpenAI(
+  base_url="http://localhost:11434/v1", api_key="ollama")` (literal — `ollama_base_url` knob dropped
+  per SRS FR-1.3; `OPENAI_API_KEY` still required at import per Prereq 2 / SRS §7.2); else existing
+  OpenAI behavior. Keep mode/`filter_on` gating + ignore-log branch.
 - `evaluate_chunks` (~373-377): `model="gpt-4o-mini"` → `model=self.relevance_model`. Parser,
   `RelevanceJudgment`, and `except → score=1.0` graceful fallback unchanged.
 - No change to logical-grouping LLM (already Ollama via `aisa/gen/chat_llm.py::_init_ollama_model`,
@@ -52,10 +53,11 @@ Ollama-native (config only); two code paths are hard-bound to OpenAI and must be
   ChunkSignals.model_json_schema(), think=False)` → `ChunkSignals.model_validate_json(...)` with
   `ollama_retries`; shared soft topic-count tail (629-640) + `return signals` unchanged.
 - `PavementExtractor`: `__init__` gate key guard, `self.api_key=None` for Ollama.
-  `_extract_spans` Ollama branch = `lx.extract(..., config=lx.factory.ModelConfig(
-  model_id=cfg.model, provider="OllamaLanguageModel", provider_kwargs={model_url, base_url,
-  temperature, num_ctx, timeout}), extraction_passes=..., max_char_buffer=..., show_progress=False)`
-  — no `api_key`. Post-proc 687-711 untouched.
+  `_extract_spans` Ollama branch = `lx.extract(..., model=_OllamaSpanLM(model_id, base_url,
+  temperature, num_ctx, timeout), extraction_passes, max_char_buffer, show_progress=False)` — no
+  `api_key`, no `config=`. `_OllamaSpanLM` = minimal `OllamaLanguageModel` subclass that strips
+  langextract's hardcoded request `format` (the gpt-oss-Harmony CoT collision; SRS FR-3.2/R2,
+  ablation+smoke-verified). Post-proc untouched.
 - Untouched: `main()`, orchestrator + failure-isolation contract, `ChunkSignals`,
   `SPAN_LEVEL_EXAMPLES`, `_resolve_input_dir`.
 
@@ -72,19 +74,39 @@ Ollama-native (config only); two code paths are hard-bound to OpenAI and must be
   ../data/specs_20260516/qa-gen/generated-questions.json`, `model="gpt-oss:20b"`,
   outputs `./self-check-output-specs/`, `max_concurrent_questions` → 4.
 
+## Change 4 — cluster endpoint portability (SRS FR-8, post-smoke)
+
+- `extract_artifacts.py`: `--host`/`--port` CLI + `_resolve_ollama_host()` (CLI > toml
+  `ollama_host` > `$OLLAMA_HOST` > localhost); `LXConfig.ollama_host` default → `None`, resolved in
+  `main()`. `_nemo.py` relevance base URL derived from `$OLLAMA_HOST` (+`/v1`).
+- `extract_artifacts_specs.toml` omits `ollama_host` (resolves from `$OLLAMA_HOST` on cluster).
+- All four `_specs` configs retargeted to `gpt-oss:120b` (`:20b` kept as `#`-comment), cluster
+  concurrency (`chunk_concurrency=8`, `max_concurrent_questions=16`). New stage-1/2 slurm jobs:
+  out of scope (user-deferred).
+
 ## Prerequisites
 
-1. User renames `rawdata-pub` → `rawdata-pubs` (24 `PUB242C09_*.md` at `./rawdata-pubs/parsed-specs/`).
-2. Ollama up, started with `num_ctx=16384` (deployment standard, local & cluster); `gpt-oss:20b` +
-   `nomic-embed-text:latest` present (verified — no pulls).
-3. Use `.venv/bin/python`.
+1. Corpus present (verified — rename already applied): `./rawdata-pubs/parsed-specs/*.md` = 24
+   `PUB242C09_*.md`; singular `rawdata-pub` is now empty. Missing ⇒ `_nemo.py` exits 0 silently
+   (§9 makes the 24-count a hard gate).
+2. **Non-empty** `OPENAI_API_KEY` + `GOOGLE_API_KEY` in env/`.env` — structurally required to
+   *import* the pipeline (`aisa/gen/providers.py:36-41,109-117`), never used for Ollama calls.
+   Blanking breaks import; zero-egress proof uses bogus-but-non-empty keys (SRS §9).
+3. Ollama up, started with `num_ctx=16384` (deployment standard, local & cluster); `gpt-oss:20b` +
+   `nomic-embed-text:latest` present (verified — no pulls). Import-time default-arg
+   `Embedder(EmbedConfig())` builds HF `all-MiniLM-L6-v2` — must be cached/reachable.
+4. Use `.venv/bin/python`.
 
 ## Verification
 
-Smoke test on 1 doc through all 4 stages, asserting: stage-1 `*-logic-ctx.json` + `*-relevance.json`
-sane; stage-2 `errors.{span,chunk}` null, `chunk_signals` schema-valid, non-empty `extractions`;
-stage-3 non-empty Q/A/context; stage-4 per-record `evaluation ∈ {0,0.5,1}`. Then full 24-doc run
-(stages are file-cached/idempotent — re-run resumes). Detail in SRS §9.
+Run the 1-doc smoke test with **bogus-but-non-empty** `OPENAI_API_KEY`/`GOOGLE_API_KEY` (success
+under bogus keys = zero OpenAI/Gemini egress proof; blanking breaks import). 1-doc subset via a
+throwaway dir + `_nemo.py --input_dir` (no `--limit` exists for stages 1–3); keep `output_dir` so
+the full run reuses cache. Assert beyond file-existence: stage-1 logical-chunk count ≠
+recursive-piece count **and** `-relevance.json` has ≥1 `score!=1.0` with no fallback log lines
+(catches silent collapse/keep-all — SRS R5/R8); stage-2 `errors.{span,chunk}` null + non-empty
+`extractions`; stage-3 non-empty Q/A/`context_text`; stage-4 `evaluation ∈ {0,0.5,1}`. Time each
+stage and publish the 24-doc projection (SRS R7) before the full run. Detail in SRS §9.
 
 ## Risks
 
@@ -94,4 +116,6 @@ local+cluster). Native-`chat`/`/v1` paths inherit the server default.
 R2 `gpt-oss:20b` reasoning leak — chunk/stage3/4 use `think=False`; span+relevance have graceful
 fallbacks, tighten prompts if needed. R3 single-GPU serialization — low concurrency + `timeout=600`.
 R4 deep nested schema on 20B — grammar-constrained + retries. R5 grouping output — `format="json"`
-+ window-end fallback. Full table in SRS §8.
++ window-end fallback (note `request_timeout=2` is inert for `ChatOllama`). R7 unbounded wall-clock
+on one GPU — measure on smoke, project 24-doc before full run. R8 silent keep-all relevance — assert
+score discrimination + no fallback logs. Full table (R1–R10) in SRS §8.

@@ -121,6 +121,13 @@ _FENCE_OPEN_RE = re.compile(r"\A```\w*\s*", re.MULTILINE)
 _FENCE_CLOSE_RE = re.compile(r"\s*```\s*\Z", re.MULTILINE)
 
 
+def _is_ollama_model(model: str) -> bool:
+    # Colon rule, byte-identical to generate-qa.py::is_ollama_model.
+    if ":" in model:
+        return True
+    return not (model.startswith("gpt") or model.startswith("gemini"))
+
+
 class QAGenerator:
     def __init__(
         self,
@@ -161,19 +168,34 @@ class QAGenerator:
         self.chunk_cfg: dict = chunk_cfg
         self.chunker: Chunker = get_chunker(chunk_cfg, llm)
 
-        # relevance filter (mode 3 only). Eager AsyncOpenAI init when enabled.
+        # relevance filter (mode 3 only). Eager eval-client init when enabled.
         self.relevance_concurrency: int = max(
             1, int(chunk_cfg.get("relevance_concurrency", 8))
+        )
+        # Model for per-piece relevance eval; defaults to the chunking [llm].model
+        # so the whole stage runs on one local model. Optional override.
+        self.relevance_model: str = (
+            chunk_cfg.get("relevance_model") or self.llm.cfg.model
         )
         self.eval_client: AsyncOpenAI | None = None
         filter_on: bool = bool(chunk_cfg.get("relevance_filter", False))
         if filter_on and chunk_cfg.get("method") == "random_logical":
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise RuntimeError(
-                    "OPENAI_API_KEY is required when [chunking].relevance_filter = true"
+            if _is_ollama_model(self.relevance_model):
+                # Ollama's OpenAI-compatible endpoint; no OPENAI_API_KEY needed.
+                # Endpoint from $OLLAMA_HOST (cluster slurm exports it) else local.
+                _oh = os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
+                if not _oh.startswith(("http://", "https://")):
+                    _oh = f"http://{_oh}"
+                self.eval_client = AsyncOpenAI(
+                    base_url=_oh.rstrip("/") + "/v1", api_key="ollama"
                 )
-            self.eval_client = AsyncOpenAI(api_key=api_key)
+            else:
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise RuntimeError(
+                        "OPENAI_API_KEY is required when [chunking].relevance_filter = true"
+                    )
+                self.eval_client = AsyncOpenAI(api_key=api_key)
         elif filter_on:
             logger.log(
                 "CHUNK",
@@ -371,7 +393,7 @@ class QAGenerator:
                 try:
                     user_content = prompt_template.format(CHUNK=chunk["text"])
                     completion = await self.eval_client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model=self.relevance_model,
                         temperature=0.0,
                         messages=[{"role": "user", "content": user_content}],
                     )
