@@ -339,6 +339,7 @@ class QAGenerator:
             files.write_json(
                 {
                     "doc_id": doc_id,
+                    "model": self.llm.cfg.model,
                     "parsed_file": parsed_file,
                     "texts": logic_chunks,
                     "images": images,
@@ -455,7 +456,10 @@ class QAGenerator:
         doc_id: str = Path(self.doc_paths[file_path]).name.replace(
             "-chunks.json", ""
         )
-        files.write_json({"doc_id": doc_id, "scores": scores}, base_out)
+        files.write_json(
+            {"doc_id": doc_id, "model": self.relevance_model, "scores": scores},
+            base_out,
+        )
         return scores
 
     async def extract_artifacts(self, file_path: Path, chunks: dictlist) -> dictlist:

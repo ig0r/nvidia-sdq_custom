@@ -1062,7 +1062,15 @@ def main(cfg: dict, overwrite: bool = False, ollama_host: str | None = None) -> 
                     "errors": result["errors"],
                 })
 
-        _write_json({"doc_id": doc_id, "artifacts": artifacts}, out_path)
+        _write_json(
+            {
+                "doc_id": doc_id,
+                "span_model": lx_cfg.model,
+                "chunk_model": lx_cfg.model,
+                "artifacts": artifacts,
+            },
+            out_path,
+        )
         logger.log(
             "CHUNK",
             f"{doc_id}: extracted artifacts from {len(artifacts)} contexts -> {out_path}",
