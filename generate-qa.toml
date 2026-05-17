@@ -2,7 +2,7 @@ Title = "Generate QA"
 
 [generate-qa]
 generate_qa = true
-extract_citations = true
+extract_citations = false
 
 # Input: directory of *-logic-ctx.json + *-logic-artifacts.json
 # (output of _nemo.py random_logical chunking + langextract artifact stage)

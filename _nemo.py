@@ -186,8 +186,13 @@ class QAGenerator:
                 _oh = os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
                 if not _oh.startswith(("http://", "https://")):
                     _oh = f"http://{_oh}"
+                # timeout=1800: a cold ~65 GB gpt-oss:120b load on the cluster can
+                # exceed the OpenAI SDK's 600 s default; without this, the relevance
+                # except→score=1.0 would silently disable the filter (SRS R8).
                 self.eval_client = AsyncOpenAI(
-                    base_url=_oh.rstrip("/") + "/v1", api_key="ollama"
+                    base_url=_oh.rstrip("/") + "/v1",
+                    api_key="ollama",
+                    timeout=1800.0,
                 )
             else:
                 api_key = os.getenv("OPENAI_API_KEY")

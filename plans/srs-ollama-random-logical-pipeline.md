@@ -210,8 +210,10 @@ port) and pass `--host localhost --port $PORT` to scripts. To make the same
   `self-check/self-check-qa_specs.toml`) target `gpt-oss:120b` (cluster), with
   the `:20b` local-debug alt in a trailing `#`-comment, and cluster-tuned
   concurrency (`chunk_concurrency=8`, `max_concurrent_questions=16` vs
-  `OLLAMA_NUM_PARALLEL=16`). **Out of scope (user-deferred):** new slurm jobs for
-  stage 1 (`_nemo.py --sdg-logical`) and stage 2 (`extract_artifacts.py`).
+  `OLLAMA_NUM_PARALLEL=16`). **Slurm jobs for stages 1–2 are now specified** as a single
+  combined job in `plans/srs-cluster-pipeline-slurm.md`, which follows the **self-check
+  template's `OLLAMA_CONTEXT_LENGTH=65536`/`NUM_PARALLEL=8`** (authoritative for the combined
+  specs run; supersedes the generic `32768/16` in §7 item 6 below).
 
 ---
 
@@ -303,10 +305,12 @@ Stage `_nemo.py --sdg-logical` runs `path2chunks` then `_build_logical_contexts`
    `reqs.txt`; only the weights are the open risk).
 5. Interpreter: `.venv/bin/python`. Native-`chat`/`/v1` paths inherit the 16384 server default;
    the langextract span path requires the explicit `num_ctx` override (§2, §8 R1).
-6. **Cluster:** slurm exports `OLLAMA_HOST=http://127.0.0.1:$PORT` (dynamic) and
-   `OLLAMA_CONTEXT_LENGTH=32768`/`OLLAMA_NUM_PARALLEL=16`. Per FR-8 the configs/code resolve the
-   endpoint from `$OLLAMA_HOST` (or `--host/--port`), so no per-job port edit is needed. Local: no
-   `$OLLAMA_HOST` → defaults to `http://localhost:11434`.
+6. **Cluster:** slurm exports `OLLAMA_HOST=http://127.0.0.1:$PORT` (dynamic). The
+   `OLLAMA_CONTEXT_LENGTH`/`NUM_PARALLEL` values differ by template (`generate-qa.slurm`
+   `32768/16`; `self-check-qa.slurm` `65536/8`); the combined specs job
+   (`plans/srs-cluster-pipeline-slurm.md`) follows **`65536/8`** (see its §8 R9 VRAM caveat).
+   Per FR-8 the configs/code resolve the endpoint from `$OLLAMA_HOST` (or `--host/--port`), so no
+   per-job port edit is needed. Local: no `$OLLAMA_HOST` → `http://localhost:11434`.
 7. Disk: negligible — per-doc intermediates (`-chunks`/`-logic-chunks`/`-relevance`/`-logic-ctx`/
    `-logic-artifacts`) + QA + self-check JSON for 24 docs total ~tens of MB (negligible — not a
    tracked risk).

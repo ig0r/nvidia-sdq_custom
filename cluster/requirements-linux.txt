@@ -1,0 +1,70 @@
+# requirements-linux.txt — conda env for the random_logical cluster pipeline (RedHat/Linux)
+# =============================================================================
+# Scope: ONLY the four cluster stages and everything they import:
+#   1. _nemo.py --sdg-logical      (imports the aisa/ package — the heavy one)
+#   2. extract_artifacts.py        (standalone)
+#   3. generate-qa.py              (standalone)
+#   4. self-check/self-check-qa.py (standalone)
+# Versions are pinned to the set verified end-to-end by the local smoke run.
+# Transitive deps (httpx, anyio, tenacity, tokenizers, safetensors, the google-*
+# stack, …) resolve automatically from the pins below — not listed.
+#
+# Setup on the cluster (login node):
+#   conda create -n qac-spec python=3.12 -y      # MUST be >=3.11 (stdlib `tomllib`
+#                                                #   is imported unconditionally)
+#   conda activate qac-spec
+#   # torch: install the CPU build FIRST (Python never touches the GPU — Ollama
+#   # serves the models separately; torch is only imported at module load and
+#   # all-MiniLM is never actually run in random_logical). Avoids a multi-GB
+#   # CUDA wheel + CUDA/driver mismatch on RedHat:
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r cluster/requirements-linux.txt
+#
+# NOT pip packages (do not add here): the Ollama models gpt-oss:120b /
+# nomic-embed-text:v1.5 (pulled by the slurm job / pull_models.sh) and the HF
+# weights sentence-transformers/all-MiniLM-L6-v2 (a model cache — see SRS §6.4).
+#
+# Deliberately EXCLUDED (imported only by the larger sibling project / off-path
+# eval scripts, NOT by stages 1–4): faiss-cpu, qdrant-client, datasets, docling,
+# vllm, spacy, streamlit, easyocr, anthropic, …  Keeps this env lean.
+# =============================================================================
+
+# --- core: all four stages (stages 2–4 are standalone; stage 1 too) ---
+openai==1.91.0
+ollama==0.5.1
+pydantic==2.11.7
+loguru==0.7.3
+python-dotenv==1.1.0
+requests==2.33.1
+tqdm==4.67.3
+numpy==2.4.4
+pandas==2.3.0
+tiktoken==0.12.0
+rapidfuzz==3.13.0
+
+# --- stage 2: extract_artifacts.py (span via langextract→Ollama) ---
+langextract==1.2.1
+
+# --- stage 1: _nemo.py → aisa/ (LangChain provider wrappers + the import-time
+#     HF Embedder default; torch/transformers/sentence-transformers are required
+#     to IMPORT aisa.gen.embed even though no embedding runs in random_logical) ---
+langchain==0.3.26
+langchain-core==0.3.84
+langchain-text-splitters==0.3.11
+langchain-ollama==0.3.3
+langchain-openai==0.3.25
+langchain-google-genai==2.1.5
+langchain-huggingface==0.3.1
+# NOTE: `google-generativeai` (the OLD Gemini SDK) is intentionally NOT pinned.
+# It hard-pins google-ai-generativelanguage==0.6.15, which conflicts with
+# langchain-google-genai 2.1.5 (requires >=0.6.18) → pip ResolutionImpossible.
+# generate-qa.py's `import google.generativeai` is lazy + try/except-guarded
+# (_GEMINI_AVAILABLE=False if absent) and never used with gpt-oss/Ollama, so
+# omitting it is safe. langchain-google-genai pulls a compatible
+# google-ai-generativelanguage (0.6.18) on its own.
+transformers==4.53.0
+sentence-transformers==5.4.1
+# torch: install the CPU build via the command in the header BEFORE this file.
+# Pin kept here for reference / reproducibility (CUDA build also works but is
+# unnecessary and heavy):
+torch==2.7.1

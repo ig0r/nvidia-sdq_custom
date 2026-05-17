@@ -1,0 +1,58 @@
+# Conda environment for the random_logical cluster pipeline (RedHat/Linux).
+# =============================================================================
+# Strategy: conda provides ONLY the Python interpreter + a clean CPU PyTorch.
+# Every other dependency is pip-pinned via cluster/requirements-linux.txt.
+#
+# WHY not all-conda: conda-forge carries these packages, but at versions far
+# newer than the ones this pipeline was verified against — e.g. conda-forge
+# langchain-ollama 1.0.1 / langchain-huggingface 1.2.0 / langextract 1.3.0 /
+# ollama-python 0.6.2 vs the required langchain 0.3.x stack + langextract
+# 1.2.1 + ollama 0.5.1. LangChain 1.x is a BREAKING release that breaks
+# aisa/gen/chat_llm.py imports. Exact "==" pins are reliable only via pip.
+#
+# PyTorch via conda (pytorch channel, cpuonly): torch is only IMPORTED in
+# Python (aisa/gen/embed.py), never run — Ollama serves the models on the GPU.
+# A CPU build avoids a multi-GB CUDA wheel + CUDA/driver mismatch. conda's
+# pytorch==2.7.* satisfies the `torch==2.7.1` pin in requirements-linux.txt,
+# so pip skips reinstalling it.
+#
+# This is a NEW, SEPARATE env (general-qa-sc-env) — independent of the shared
+# qac-env the original per-stage slurm jobs use. Create it on /vast (compute
+# nodes need the env on shared storage), from the repo root so the pip -r
+# path resolves:
+#
+#   cd /vast/lkhazanovich/igs18/llm/nvidia-sdq_custom
+#
+#   # --- Option A: one shot (conda owns python + CPU torch; pip owns the rest)
+#   conda env create -f cluster/environment.yml \
+#       -p /vast/lkhazanovich/igs18/envs/general-qa-sc-env
+#   conda activate /vast/lkhazanovich/igs18/envs/general-qa-sc-env
+#
+#   # --- Option B: manual create, then pip
+#   conda create -p /vast/lkhazanovich/igs18/envs/general-qa-sc-env python=3.12 -y
+#   conda activate /vast/lkhazanovich/igs18/envs/general-qa-sc-env
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r cluster/requirements-linux.txt
+#
+#   # Update (Option A):
+#   conda env update -f cluster/environment.yml \
+#       -p /vast/lkhazanovich/igs18/envs/general-qa-sc-env --prune
+#
+# REQUIRED — because this is a separate env, repoint the slurm to it
+# (cluster/logical-chunks-qa-sc-spec~.slurm), replacing the two qac-env lines:
+#   source activate /vast/lkhazanovich/igs18/envs/general-qa-sc-env
+#   export LD_LIBRARY_PATH=/vast/lkhazanovich/igs18/envs/general-qa-sc-env/x86_64-conda-linux-gnu/lib/:$LD_LIBRARY_PATH
+# (and the FR-2.2 / §5 references in plans/srs-cluster-pipeline-slurm.md).
+# =============================================================================
+name: general-qa-sc-env
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.12          # MUST be >=3.11 — `tomllib` is imported unconditionally
+  - pip
+  - pytorch=2.7.*        # CPU build via the cpuonly metapackage below
+  - cpuonly              #   (forces no-CUDA; any recent 2.x CPU build is fine —
+                         #    torch is only imported, never executed)
+  - pip:
+      - -r requirements-linux.txt
