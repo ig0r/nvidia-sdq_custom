@@ -6,7 +6,7 @@ Title = "Self-check QA evaluation"
 
 # Input: single JSON list produced by generate-qa.py (WITH context_text — not _wo_context)
 # Each record has: question_id, question, answer, context_text, ...
-input_qa_json = "../data/specs_20260516/qa-gen/generated-questions.json"
+input_qa_json = "./data/specs_20260516/qa-gen/generated-questions.json"
 
 # Prompt template (same prompt body as the example pipeline,
 # renamed from prompts/evaluate-process-question-answer-02.txt)
@@ -16,10 +16,10 @@ prompt_eval = "./prompts/self-check-01.txt"
 model = "gpt-oss:120b"#"gpt-oss:20b"   # cluster=120b; local debug=20b
 
 # Outputs (created if missing)
-output_json            = "./self-check-output-specs/self-check-qa-results.json"
-output_json_wo_context = "./self-check-output-specs/self-check-qa-results_wo_context.json"
-output_csv             = "./self-check-output-specs/self-check-qa-results.csv"
-intermediate_json      = "./self-check-output-specs/self-check-qa-intermediate.json"
+output_json            = "./data/specs_20260516/self-check-output-specs/self-check-qa-results.json"
+output_json_wo_context = "./data/specs_20260516/self-check-output-specs/self-check-qa-results_wo_context.json"
+output_csv             = "./data/specs_20260516/self-check-output-specs/self-check-qa-results.csv"
+intermediate_json      = "./data/specs_20260516/self-check-output-specs/self-check-qa-intermediate.json"
 
 # Behavior
 retries_number = 3

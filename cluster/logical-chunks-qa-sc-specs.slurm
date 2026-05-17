@@ -79,7 +79,6 @@ python generate-qa.py --config ./generate-qa_specs.toml \
   || { echo "[stage 3] FAILED (exit $?)" >&2; exit 13; }
 
 echo "[stage 4] self-check  (--config; run from self-check/)"
-cd "$PROJ/self-check"
 python self-check-qa.py --config ./self-check-qa_specs.toml \
   --host localhost --port "$PORT" &>> "$LOGS/04-selfcheck.log" \
   || { echo "[stage 4] FAILED (exit $?)" >&2; exit 14; }
